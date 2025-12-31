@@ -1,5 +1,4 @@
 # Temporal Convolution Verification Guide
-**Person 3 - Testbench Owner**
 
 ---
 
