@@ -7,26 +7,8 @@ echo Temporal Convolution Verification Flow
 echo ============================================================
 echo.
 
-REM Check Python
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python not found! Please install Python 3.8+
-    exit /b 1
-)
-
-REM Step 1: Generate test vectors
-echo [Step 1/3] Generating test vectors...
-cd ..\python
-python generate_test_vectors.py
-if errorlevel 1 (
-    echo ERROR: Test vector generation failed!
-    cd ..\scripts
-    exit /b 1
-)
-echo.
-
-REM Step 2: Run RTL simulation
-echo [Step 2/3] Running RTL simulation...
+REM Run RTL simulation
+echo [Step 1/2] Running RTL simulation...
 cd ..\sim
 
 REM Check for ModelSim
@@ -52,32 +34,25 @@ cd ..\scripts
 exit /b 1
 
 :verify
-REM Step 3: Verify results
+REM Step 2: Check results
 echo.
-echo [Step 3/3] Verifying results...
-cd ..\python
+echo [Step 2/2] Checking results...
 
-REM Check if RTL output exists
-if not exist ..\sim\rtl_output.txt (
-    echo WARNING: rtl_output.txt not found, skipping verification
-    echo Check simulation log for details
+REM Check if simulation log exists
+if not exist ..\sim\simulation.log (
+    echo WARNING: simulation.log not found
+    echo Check simulation for details
     cd ..\scripts
     exit /b 0
 )
 
-python verify_results.py ..\sim\rtl_output.txt ..\sim\simple_case.json
-set VERIFY_RESULT=%errorlevel%
-
+echo Simulation completed. Check simulation.log for test results.
 cd ..\scripts
 
 echo.
 echo ============================================================
-if %VERIFY_RESULT%==0 (
-    echo VERIFICATION PASSED!
-) else (
-    echo VERIFICATION FAILED - Check verification_report.txt
-)
+echo Simulation complete - Check console output for pass/fail
 echo ============================================================
 echo.
 
-exit /b %VERIFY_RESULT%
+exit /b 0

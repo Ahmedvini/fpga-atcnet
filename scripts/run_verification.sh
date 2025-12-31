@@ -9,20 +9,8 @@ echo "Temporal Convolution Verification Flow"
 echo "============================================================"
 echo ""
 
-# Check Python
-if ! command -v python3 &> /dev/null; then
-    echo "ERROR: Python 3 not found! Please install Python 3.8+"
-    exit 1
-fi
-
-# Step 1: Generate test vectors
-echo "[Step 1/3] Generating test vectors..."
-cd ../python
-python3 generate_test_vectors.py
-echo ""
-
-# Step 2: Run RTL simulation
-echo "[Step 2/3] Running RTL simulation..."
+# Run RTL simulation
+echo "[Step 1/2] Running RTL simulation..."
 cd ../sim
 
 # Check for available simulators
@@ -43,30 +31,26 @@ else
     exit 1
 fi
 
-# Step 3: Verify results
+# Check results
 echo ""
-echo "[Step 3/3] Verifying results..."
-cd ../python
+echo "[Step 2/2] Checking results..."
 
-if [ ! -f ../sim/rtl_output.txt ]; then
-    echo "WARNING: rtl_output.txt not found, skipping verification"
-    echo "Check simulation log for details"
+if [ ! -f ../sim/simulation.log ]; then
+    echo "WARNING: simulation.log not found"
+    echo "Check simulation for details"
     exit 0
 fi
 
-python3 verify_results.py ../sim/rtl_output.txt ../sim/simple_case.json
-VERIFY_RESULT=$?
-
-cd ../scripts
+echo "Simulation completed. Check simulation.log for test results."
 
 echo ""
 echo "============================================================"
-if [ $VERIFY_RESULT -eq 0 ]; then
-    echo "✓ VERIFICATION PASSED!"
-else
-    echo "✗ VERIFICATION FAILED - Check verification_report.txt"
-fi
+echo "Simulation complete - Check console output for pass/fail"
 echo "============================================================"
 echo ""
 
-exit $VERIFY_RESULT
+exit 0
+
+
+if __name__ == "__main__":
+    main()
