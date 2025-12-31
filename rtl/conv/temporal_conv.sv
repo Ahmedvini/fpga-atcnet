@@ -48,7 +48,7 @@ module temporal_conv #(
 
     // Shift Register to store the last KERNEL_SIZE input samples.
     // shift_reg[0] will hold the most recent registered sample (x[n-1] effectively).
-    logic signed [DATA_WIDTH-1:0] shift_reg [KERNEL_SIZE];
+    logic signed [DATA_WIDTH-1:0] shift_reg [0:KERNEL_SIZE-1];
 
     // Internal Valid Pipeline
     logic valid_d;
@@ -141,11 +141,9 @@ module temporal_conv #(
             // If there's a gap, valid_d will be 0.
             if (valid_d) begin
                 // Truncation/Slicing:
-                // We take the LSBs by default (integer math).
-                // Or should we take MSBs?
-                // Given "Signed input sample" -> "Signed output sample" usually implies integer-like representation in basic DSP unless Q-format is specified.
-                // We will assign the lower bits.
-                y_out <= acc_comb[DATA_WIDTH-1:0]; 
+                // We extract the most significant DATA_WIDTH bits (MSBs) to preserve dynamic range.
+                // This assumes the inputs and coefficients are scaled such that the useful information is in the upper bits.
+                y_out <= acc_comb[ACC_WIDTH-1 -: DATA_WIDTH]; 
             end
         end
     end
