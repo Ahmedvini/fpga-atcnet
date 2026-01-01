@@ -3,7 +3,7 @@ module window_gen #(
     parameter int WINDOW_SIZE = 32        // number of samples per window
 )(
     input  logic                    clk,
-    input  logic                    rst_n,
+    input  logic                    rst,
 
     // Streaming input
     input  logic                    in_valid,
@@ -25,8 +25,8 @@ module window_gen #(
     // ----------------------------
     // Write incoming samples
     // ----------------------------
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk) begin
+        if (rst) begin
             wr_ptr        <= '0;
             sample_count  <= '0;
         end
@@ -45,7 +45,7 @@ module window_gen #(
     // ----------------------------
     // Window valid signal
     // ----------------------------
-    assign window_valid = (sample_count == WINDOW_SIZE);
+    assign window_valid = (in_valid && (sample_count == WINDOW_SIZE));
 
     // ----------------------------
     // Output window (oldest → newest) WITHOUT modulo
