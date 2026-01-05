@@ -289,5 +289,8 @@ module temporal_conv_tb_icarus;
         $display("\n[ERROR] Simulation timeout!");
         $finish;
     end
-
+    initial begin
+        $dumpfile("temporal_conv.vcd"); // This creates the data file
+        $dumpvars(0, temporal_conv_tb_icarus); // This records all signals in this module
+    end
 endmodule
