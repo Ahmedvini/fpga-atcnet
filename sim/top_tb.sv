@@ -1,19 +1,6 @@
 `timescale 1ns / 1ps
 
-/**
- * Module: top_tb
- * 
- * Description:
- *   Comprehensive integration testbench for the complete ATCNet pipeline:
- *   Stream Input → Window Gen → Window Reader → Dual Branch Conv → Channel Scale → Output
- * 
- * Tests:
- *   1. End-to-end data flow
- *   2. Valid signal alignment
- *   3. Latency measurement
- *   4. Integration correctness
- *   5. Pipeline stalls and backpressure (if applicable)
- */
+
 
 module top_tb;
 
@@ -247,12 +234,7 @@ module top_tb;
             
             reset_dut();
             
-            // Expected latency breakdown:
-            // - window_gen: WINDOW_SIZE cycles to fill
-            // - window_reader: 1 cycle
-            // - dual_branch_conv: 3 cycles (2 from temporal_conv + 1 from summation)
-            // - channel_scale: 1 cycle
-            // Total: WINDOW_SIZE + 5
+
             expected_latency = WINDOW_SIZE + 5;
             
             $display("  Expected latency: %0d cycles", expected_latency);

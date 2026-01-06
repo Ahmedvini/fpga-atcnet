@@ -1,6 +1,3 @@
-# run_vivado_tests.ps1
-# Automated Vivado testbench runner for ATCNet project
-# Usage: .\run_vivado_tests.ps1 [temporal|top|all]
 
 param(
     [Parameter(Position=0)]
