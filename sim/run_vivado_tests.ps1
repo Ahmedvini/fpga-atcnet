@@ -5,6 +5,8 @@ param(
     [string]$TestName = "help"
 )
 
+#Define the project root directory
+
 $ProjectRoot = "C:\College\Graduation\FPGA\fpga-atcnet"
 
 function Show-Help {
