@@ -61,7 +61,7 @@ module temporal_multihead_attention #(
     // Product Width
     localparam int PROD_WIDTH = DATA_WIDTH + ENERGY_WIDTH;
     
-    // Aggregation Accumulator Width
+        // Aggregation Accumulator Width
     localparam int AGG_WIDTH = DATA_WIDTH + $clog2(NUM_HEADS); // Allow growth by sum of heads
 
     // -------------------------------------------------------------------------
@@ -89,7 +89,6 @@ module temporal_multihead_attention #(
 
     // Stage 2 Intermediate Signals
     logic signed [PROD_WIDTH-1:0]   prod_comb [0:NUM_HEADS-1][0:CH_PER_HEAD-1];
-
     // Stage 3 Intermediate Signals
     logic signed [AGG_WIDTH:0]      agg_comb [0:CH_PER_HEAD-1]; // +1 for safety during sum
 
