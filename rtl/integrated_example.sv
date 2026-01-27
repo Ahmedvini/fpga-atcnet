@@ -1,15 +1,4 @@
-/**
- * Module: integrated_example
- * 
- * Description:
- *   Example showing how to integrate window_gen and temporal_conv modules
- *   for processing streaming data through a sliding window and FIR filter.
- * 
- * Data Flow:
- *   Raw Stream → Window Generator → Temporal Convolution → Filtered Output
- * 
- * Owner: Person 3 (integration example)
- */
+
 
 `timescale 1ns / 1ps
 

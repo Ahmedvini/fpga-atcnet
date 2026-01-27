@@ -1,22 +1,5 @@
 `timescale 1ns / 1ps
 
-/**
- * Module: temporal_conv_tb
- * 
- * Description:
- *   Comprehensive testbench for temporal_conv.sv module
- *   Tests the actual RTL implementation (not a golden model)
- *   Icarus Verilog compatible (uses Verilog-2001 syntax)
- * 
- * Tests:
- *   1. Impulse Response
- *   2. DC Response (Constant Input)
- *   3. Ramp Response (Linearity)
- *   4. Zero Input
- *   5. Latency Measurement
- *   6. Streaming with Gaps
- */
-
 module temporal_conv_tb;
 
     // Parameters
