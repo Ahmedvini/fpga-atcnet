@@ -5,13 +5,12 @@ module window_gen #(
     input  logic                    clk,
     input  logic                    rst,
     input  logic                    in_valid,
-    input  logic [DATA_W-1:0]       in_sample,
+    input  logic signed [DATA_W-1:0] in_sample,
     output logic                    window_valid,
-    // ADDED 'signed' HERE
     output logic signed [DATA_W-1:0] window [0:WINDOW_SIZE-1]
 );
 
-    logic [DATA_W-1:0] buffer [0:WINDOW_SIZE-1];
+    logic signed [DATA_W-1:0] buffer [0:WINDOW_SIZE-1];
     logic [$clog2(WINDOW_SIZE)-1:0]   wr_ptr;
     logic [$clog2(WINDOW_SIZE+1)-1:0] sample_count;
 

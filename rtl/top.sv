@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 module top #(
     parameter int DATA_WIDTH  = 16,
     parameter int COEF_WIDTH  = 16,

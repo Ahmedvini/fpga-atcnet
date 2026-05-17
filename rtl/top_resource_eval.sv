@@ -9,6 +9,8 @@
 // - This top assumes KERNEL_SIZE = 5 because the coefficient arrays below are length 5.
 // - If you change KERNEL_SIZE later, you must update the coefficient arrays manually.
 
+`timescale 1ns / 1ps
+
 module top_resource_eval #(
   parameter int DATA_WIDTH  = 16,
   parameter int COEF_WIDTH  = 16,

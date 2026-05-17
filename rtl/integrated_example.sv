@@ -37,17 +37,12 @@ module integrated_example #(
     logic [$clog2(WINDOW_SIZE)-1:0] window_idx;
     logic processing_window;
     
-    // FIR filter coefficients (example: simple averaging filter)
-    logic signed [DATA_WIDTH-1:0] fir_coeffs [KERNEL_SIZE];
-    initial begin
-        // Simple averaging: each coefficient = 1/KERNEL_SIZE
-        // For KERNEL_SIZE=5: 1/5 = 0.2 = 0x0033 in Q8.8
-        fir_coeffs[0] = 16'h0033;  // 0.2
-        fir_coeffs[1] = 16'h0033;  // 0.2
-        fir_coeffs[2] = 16'h0033;  // 0.2
-        fir_coeffs[3] = 16'h0033;  // 0.2
-        fir_coeffs[4] = 16'h0033;  // 0.2
-    end
+    // FIR filter coefficients (example: simple averaging filter).
+    // Must be a localparam so it can be passed as a parameter to temporal_conv.
+    // Simple averaging: each coefficient = 1/KERNEL_SIZE.
+    // For KERNEL_SIZE=5: 1/5 = 0.2 = 0x0033 in Q8.8.
+    localparam logic signed [DATA_WIDTH-1:0] fir_coeffs [KERNEL_SIZE] =
+        '{16'h0033, 16'h0033, 16'h0033, 16'h0033, 16'h0033};
     
     //==========================================================================
     // Module 1: Window Generator
