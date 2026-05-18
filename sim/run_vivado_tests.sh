@@ -55,6 +55,7 @@ ${YELLOW}Available tests:${NC}
   sat_add         - Layer 15: Add(BranchA_pool2, BranchB_pool2) saturating add — bit-exact.
   eca2            - Layer 16: ECA₂ (GAP + Conv1D + sigmoid + gate apply) on (10,32) — bit-exact.
   chan_w0         - ImpCBAM channel attention, sliding window 0 — bit-exact.
+  divider         - Unsigned serial divider sanity test (no h5 refs needed).
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -312,6 +313,19 @@ run_chan_w0() {
 }
 
 # ---------------------------------------------------------------------------
+# Sanity TB for the unsigned serial divider.
+# ---------------------------------------------------------------------------
+run_divider() {
+    echo ""
+    echo -e "${GREEN}Running serial divider sanity test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    xvlog --sv rtl/util/serial_divider.sv sim/serial_divider_tb.sv || die "Compilation failed!"
+    xelab serial_divider_tb -debug typical || die "Elaboration failed!"
+    xsim serial_divider_tb -runall
+    echo -e "${GREEN}Divider sanity complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -391,6 +405,7 @@ case "$TEST" in
     sat_add)         run_sat_add ;;
     eca2)            run_eca2 ;;
     chan_w0)         run_chan_w0 ;;
+    divider)         run_divider ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
