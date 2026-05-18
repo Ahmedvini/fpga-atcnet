@@ -133,17 +133,25 @@ def main() -> int:
     max_pool = x_q.max(axis=1).astype(np.int16)
     print(f"  max_pool: {max_pool.tolist()}")
 
-    # ---------- Stochastic pool over channels ----------
+    # ---------- Stochastic pool over channels (HW-aligned formulation) ----------
+    # One division per time step (cheap on FPGA), then per-element multiply.
+    #   norm[t]      = sum_c |x[t,c]|                  (Q8.8)
+    #   inv_norm[t]  = floor(2^24 / max(norm[t], 1))   (one sequential division per t)
+    #   stoch_acc[t] = sum_c (|x[t,c]| * inv_norm[t]) * x[t,c]
+    #   stoch_pool[t]= sat( stoch_acc[t] >> 32 )
+    #
+    # Bit width: |x| (Q8.8, 16b) * inv_norm (~25b) → 41-bit. Multiplied by x_q
+    # (16b) → 57-bit. Summed over 32 → 62-bit. Shifted >> 32 → 30-bit, then
+    # saturated to Q8.8.
     abs_x = np.abs(x_q.astype(np.int64))
-    norm  = abs_x.sum(axis=1, keepdims=True)                          # (6, 1)
-    norm  = np.maximum(norm, 1)                                        # eps floor (1 Q8.8 unit)
-    # probs in Q24 fixed point: probs_q24[t,c] = (abs_x[t,c] << 24) / norm[t]
-    probs_q24 = (abs_x << 24) // norm                                  # (6, 32) int64
-    # out[t]   = sum_c (probs_q24[t,c] * x_q[t,c]) >> 24
-    stoch_acc = (probs_q24 * x_q.astype(np.int64)).sum(axis=1)
-    stoch_pool = stoch_acc >> 24
-    stoch_pool = np.clip(stoch_pool, LO, HI).astype(np.int16)
+    norm_per_t  = np.maximum(abs_x.sum(axis=1), 1)                     # (6,)
+    inv_norm    = (1 << 24) // norm_per_t                              # (6,) one floor-div per t
+    probs_q24   = abs_x * inv_norm[:, np.newaxis]                       # (6, 32) Q24-ish
+    stoch_acc   = (probs_q24 * x_q.astype(np.int64)).sum(axis=1)        # (6,)
+    stoch_pool  = stoch_acc >> 24
+    stoch_pool  = np.clip(stoch_pool, LO, HI).astype(np.int16)
     print(f"  stoch_pool: {stoch_pool.tolist()}")
+    print(f"  inv_norm:   {inv_norm.tolist()}")
 
     # ---------- Concat: (6, 1, 3) — order = [avg, max, stoch] ----------
     concat = np.stack([avg_pool, max_pool, stoch_pool], axis=-1)       # (6, 3)
