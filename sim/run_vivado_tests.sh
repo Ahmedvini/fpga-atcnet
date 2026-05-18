@@ -42,7 +42,9 @@ ${YELLOW}Usage:${NC}
 
 ${YELLOW}Available tests:${NC}
   conv2d_temporal - Layer 1+2 (Conv2D + folded BN) bit-exact regression.
-  eca             - Layer 3 (ECA₁ Conv1D + sigmoid LUT) bit-exact regression.
+  eca             - Layer 3 ECA₁ gate-compute (Conv1D + σ-LUT) bit-exact.
+  gap             - Streaming GAP accumulator (reciprocal-multiply) bit-exact.
+  gate_apply      - Per-channel gate multiplier bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -119,6 +121,37 @@ run_eca() {
 }
 
 # ---------------------------------------------------------------------------
+# Streaming GAP accumulator (reciprocal-multiply divide-by-N).
+# ---------------------------------------------------------------------------
+run_gap() {
+    echo ""
+    echo -e "${GREEN}Running GAP accumulator bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_conv2d_output.hex ] || die "missing Layer 1+2 output — run: python3 scripts/q88_layer1.py"
+    [ -f data/golden_q88/stage_eca1_input.hex    ] || die "missing GAP reference — run: python3 scripts/q88_eca1.py"
+    xvlog --sv rtl/attention/gap_accumulator.sv sim/gap_accumulator_tb.sv || die "Compilation failed!"
+    xelab gap_accumulator_tb -debug typical || die "Elaboration failed!"
+    xsim gap_accumulator_tb -runall
+    echo -e "${GREEN}GAP accumulator test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Per-channel gate-apply multiplier.
+# ---------------------------------------------------------------------------
+run_gate_apply() {
+    echo ""
+    echo -e "${GREEN}Running gate_apply bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_conv2d_output.hex ] || die "missing Layer 1+2 output — run: python3 scripts/q88_layer1.py"
+    [ -f data/golden_q88/stage_eca1_gate.hex     ] || die "missing ECA₁ gate — run: python3 scripts/q88_eca1.py"
+    [ -f data/golden_q88/stage_eca1_output.hex   ] || die "missing gated feature map — run: python3 scripts/q88_eca1.py"
+    xvlog --sv rtl/attention/gate_apply.sv sim/gate_apply_tb.sv || die "Compilation failed!"
+    xelab gate_apply_tb -debug typical || die "Elaboration failed!"
+    xsim gate_apply_tb -runall
+    echo -e "${GREEN}gate_apply test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -186,6 +219,8 @@ run_aes() {
 case "$TEST" in
     conv2d_temporal) run_conv2d_temporal ;;
     eca)             run_eca ;;
+    gap)             run_gap ;;
+    gate_apply)      run_gate_apply ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;

@@ -18,6 +18,8 @@ TOP="${1:-conv2d_temporal}"
 # Model RTL (HaLT pipeline). Add new modules here as they are built.
 MODEL_RTL=(
   rtl/attention/eca_attention.sv
+  rtl/attention/gap_accumulator.sv
+  rtl/attention/gate_apply.sv
   rtl/conv/conv2d_temporal.sv
   rtl/window/eeg_channel_adapter.sv
 )

@@ -152,17 +152,28 @@ def main() -> int:
     gate = sigmoid_q88_lut(sig_in, lut)                 # (16,) int16
     print(f"  gate values (real): {[round(g/256, 4) for g in gate]}")
 
+    # ---------- Apply gate to the feature map: y[t,c,f] = sat(x[t,c,f] * gate[f] >> 8) ----------
+    # This is the per-channel multiplier that downstream Branch A/B consumes.
+    prod = layer12_q.astype(np.int64) * gate[np.newaxis, np.newaxis, :].astype(np.int64)
+    prod_shifted = prod >> FRAC_BITS
+    gated_q = np.clip(prod_shifted, LO, HI).astype(np.int16)   # (T, C, F1)
+    n_sat_apply = int(((prod_shifted > HI) | (prod_shifted < LO)).sum())
+    print(f"  gated feature map abs_max={int(np.abs(gated_q).max())}  sat={n_sat_apply}/{gated_q.size}")
+
     # ---------- Write HEX files ----------
-    in_hex   = OUT_DIR / "stage_eca1_input.hex"        # GAP vector (16)
-    w_hex    = OUT_DIR / "stage_eca1_weights.hex"      # Conv1D taps (3)
-    out_hex  = OUT_DIR / "stage_eca1_gate.hex"         # sigmoid gates (16)
+    in_hex      = OUT_DIR / "stage_eca1_input.hex"     # GAP vector (16)
+    w_hex       = OUT_DIR / "stage_eca1_weights.hex"   # Conv1D taps (3)
+    gate_hex    = OUT_DIR / "stage_eca1_gate.hex"      # sigmoid gates (16)
+    out_hex     = OUT_DIR / "stage_eca1_output.hex"    # gated feature map (T*C*F1)
     in_hex.write_text(to_hex(gap_q88, DATA_WIDTH))
     w_hex.write_text(to_hex(qw, COEF_WIDTH))
-    out_hex.write_text(to_hex(gate, DATA_WIDTH))
+    gate_hex.write_text(to_hex(gate, DATA_WIDTH))
+    out_hex.write_text(to_hex(gated_q, DATA_WIDTH))
     print()
-    print(f"wrote {in_hex}    ({gap_q88.size} values)")
-    print(f"wrote {w_hex}  ({qw.size} values)")
-    print(f"wrote {out_hex}     ({gate.size} values)")
+    print(f"wrote {in_hex}    ({gap_q88.size} values, GAP vector)")
+    print(f"wrote {w_hex}  ({qw.size} values, Conv1D taps)")
+    print(f"wrote {gate_hex}     ({gate.size} values, sigmoid gates)")
+    print(f"wrote {out_hex}   ({gated_q.size} values, gated feature map)")
 
     # ---------- Meta ----------
     meta = {
