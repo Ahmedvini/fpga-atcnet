@@ -36,8 +36,10 @@ module conv2d_temporal #(
     parameter int FRAC_BITS     = 8,
     // Path to .mem with KE*F1 signed Q-format coefficients, tap-major order:
     //   address k*F1 + f -> W[k][f]
-    // Loaded once at elaboration via $readmemh.
-    parameter string WEIGHTS_FILE = ""
+    parameter string WEIGHTS_FILE = "",
+    // Optional path to .mem with F1 signed Q-format per-filter biases (e.g.
+    // BN folded into the Conv at export time). Leave "" for no bias.
+    parameter string BIAS_FILE    = ""
 ) (
     input  logic clk,
     input  logic rst,
@@ -53,9 +55,11 @@ module conv2d_temporal #(
 
     // -------------------------------------------------------------------------
     // Weights: loaded once from WEIGHTS_FILE in tap-major, filter-minor order.
+    // Bias:    optional per-filter, loaded from BIAS_FILE (for BN folding).
     // -------------------------------------------------------------------------
     logic signed [COEF_WIDTH-1:0] w_flat [0:KE*F1-1];
     logic signed [COEF_WIDTH-1:0] W      [0:KE-1][0:F1-1];
+    logic signed [DATA_WIDTH-1:0] B      [0:F1-1];
 
     initial begin
         if (WEIGHTS_FILE != "") begin
@@ -66,6 +70,12 @@ module conv2d_temporal #(
         for (int k = 0; k < KE; k++)
             for (int f = 0; f < F1; f++)
                 W[k][f] = w_flat[k*F1 + f];
+
+        if (BIAS_FILE != "") begin
+            $readmemh(BIAS_FILE, B);
+        end else begin
+            for (int f = 0; f < F1; f++) B[f] = '0;
+        end
     end
 
     // -------------------------------------------------------------------------
@@ -130,10 +140,12 @@ module conv2d_temporal #(
             out_electrode <= in_electrode;
             for (int f = 0; f < F1; f++) begin
                 logic signed [ACC_WIDTH-1:0] shifted;
-                shifted = acc[f] >>> FRAC_BITS;
-                if (shifted > SAT_HI)      out_filter[f] <= SAT_HI[DATA_WIDTH-1:0];
-                else if (shifted < SAT_LO) out_filter[f] <= SAT_LO[DATA_WIDTH-1:0];
-                else                       out_filter[f] <= shifted[DATA_WIDTH-1:0];
+                logic signed [ACC_WIDTH-1:0] with_bias;
+                shifted   = acc[f] >>> FRAC_BITS;
+                with_bias = shifted + $signed({{(ACC_WIDTH-DATA_WIDTH){B[f][DATA_WIDTH-1]}}, B[f]});
+                if (with_bias > SAT_HI)      out_filter[f] <= SAT_HI[DATA_WIDTH-1:0];
+                else if (with_bias < SAT_LO) out_filter[f] <= SAT_LO[DATA_WIDTH-1:0];
+                else                         out_filter[f] <= with_bias[DATA_WIDTH-1:0];
             end
         end
     end

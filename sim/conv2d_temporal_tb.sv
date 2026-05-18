@@ -64,7 +64,8 @@ module conv2d_temporal_tb;
         .COEF_WIDTH   (COEF_WIDTH),
         .ACC_WIDTH    (ACC_WIDTH),
         .FRAC_BITS    (FRAC_BITS),
-        .WEIGHTS_FILE ("data/golden_q88/stage_conv2d_weights.hex")
+        .WEIGHTS_FILE ("data/golden_q88/stage_conv2d_weights.hex"),
+        .BIAS_FILE    ("data/golden_q88/stage_conv2d_bias.hex")
     ) dut (
         .clk(clk), .rst(rst),
         .in_valid(in_valid),

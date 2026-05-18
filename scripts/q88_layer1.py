@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
 """
-q88_layer1.py — Bit-accurate Q8.8 Python reference for Layer 1 (temporal Conv2D)
-of the HaLT-variant DB-ATCNet.
+q88_layer1.py — Bit-accurate Q8.8 Python reference for fused Layer 1 + 2
+(temporal Conv2D + BatchNorm) of the HaLT-variant DB-ATCNet.
+
+BatchNorm is folded into the Conv at export time. Mathematically:
+    y = gamma * (Conv2D(x) - mean) / sqrt(var + eps) + beta
+      = scale[f] * Conv2D(x) + bias[f]
+where:
+    scale[f] = gamma[f] / sqrt(var[f] + eps)        # absorbed into w
+    bias[f]  = beta[f]  - mean[f] * scale[f]        # added as per-filter Q8.8 bias
+
+This eliminates a runtime BN module; the RTL just applies the folded
+weights and the folded bias as part of conv2d_temporal.sv.
 
 Layer 1 spec (from docs/FPGA_DEPLOYMENT_DOC.md §4.1):
     Conv2D(filters=F1=16, kernel_size=(KE=64, 1),
            padding='same', data_format='channels_last', use_bias=False)
+    BatchNorm(axis=-1)
 
 Input shape (Keras channels_last after Permute(3,2,1)):
     (B=1, T=TRIAL_SAMPLES=600, C=NUM_INPUT_CH=5, in_ch=1)
@@ -98,11 +109,26 @@ def main() -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ---------- Load weights ----------
-    print(f"Loading Conv2D weights from {args.weights}...")
+    # ---------- Load weights + BN params, fold BN into Conv ----------
+    print(f"Loading Conv2D + BN weights from {args.weights}...")
     with h5py.File(args.weights, "r") as f:
-        w = f["layers/conv2d/vars/0"][()].astype(np.float32)      # (KE, 1, 1, F1)
-    print(f"  weights shape={w.shape}, abs_max={np.abs(w).max():.4f}")
+        w     = f["layers/conv2d/vars/0"][()].astype(np.float32)            # (KE, 1, 1, F1)
+        bn_g  = f["layers/batch_normalization/vars/0"][()].astype(np.float32) # gamma  (F1,)
+        bn_b  = f["layers/batch_normalization/vars/1"][()].astype(np.float32) # beta   (F1,)
+        bn_m  = f["layers/batch_normalization/vars/2"][()].astype(np.float32) # mean   (F1,)
+        bn_v  = f["layers/batch_normalization/vars/3"][()].astype(np.float32) # var    (F1,)
+    eps = 1e-3   # Keras BatchNormalization default
+    print(f"  conv  weights shape={w.shape}, abs_max={np.abs(w).max():.4f}")
+    print(f"  BN gamma abs_max={np.abs(bn_g).max():.4f}, beta abs_max={np.abs(bn_b).max():.4f}")
+    print(f"  BN mean  abs_max={np.abs(bn_m).max():.4f}, var  abs_max={np.abs(bn_v).max():.4f}")
+
+    # Fold:  y = gamma*(Conv-mean)/sqrt(var+eps) + beta
+    #          = scale[f] * Conv + bias[f]
+    # where scale[f] = gamma[f]/sqrt(var[f]+eps), bias[f] = beta[f] - mean[f]*scale[f]
+    scale = bn_g / np.sqrt(bn_v + eps)                # (F1,)
+    bias  = bn_b - bn_m * scale                        # (F1,)
+    w     = w * scale[np.newaxis, np.newaxis, np.newaxis, :]   # broadcast over (KE,1,1,F1)
+    print(f"  folded weights abs_max={np.abs(w).max():.4f}, folded bias abs_max={np.abs(bias).max():.4f}")
 
     # ---------- Input ----------
     if args.input:
@@ -114,9 +140,11 @@ def main() -> int:
 
     # ---------- Quantize ----------
     qx = quantize_q88(x_real)                          # (T, C) int16
-    qw = quantize_q88(w[:, 0, 0, :])                   # (KE, F1) int16
+    qw = quantize_q88(w[:, 0, 0, :])                   # (KE, F1) int16   (BN-folded)
+    qb = quantize_q88(bias)                            # (F1,) int16      (BN-folded)
     print(f"  q_in abs_max={int(np.abs(qx).max())}  (Q8.8 limit 32767)")
     print(f"  q_w  abs_max={int(np.abs(qw).max())}")
+    print(f"  q_b  abs_max={int(np.abs(qb).max())}")
 
     # ---------- Q8.8 Conv2D with 'same' padding ----------
     pad_top = (KE - 1) // 2     # 31
@@ -131,31 +159,38 @@ def main() -> int:
         # qw[k]               -> (F1,)
         acc += qx_padded[k : k + T, :, np.newaxis] * qw[k, np.newaxis, np.newaxis, :].astype(np.int64)
 
-    # Rescale + saturate to int16
-    shifted = acc >> FRAC_BITS
+    # Rescale to Q8.8, add folded bias, then saturate to int16.
+    # The HW does:  shifted = acc >>> FRAC_BITS; with_bias = shifted + bias; out = sat(with_bias).
+    shifted   = acc >> FRAC_BITS
+    with_bias = shifted + qb[np.newaxis, np.newaxis, :].astype(np.int64)
     HI = (1 << (DATA_WIDTH - 1)) - 1
     LO = -(1 << (DATA_WIDTH - 1))
-    q_out = np.clip(shifted, LO, HI).astype(np.int16)
-    n_sat = int(((shifted > HI) | (shifted < LO)).sum())
+    q_out = np.clip(with_bias, LO, HI).astype(np.int16)
+    n_sat = int(((with_bias > HI) | (with_bias < LO)).sum())
 
     print(f"  output shape={q_out.shape}, abs_max={int(np.abs(q_out).max())}, sat={n_sat}/{q_out.size}")
 
     # ---------- Write HEX files ----------
-    in_hex  = OUT_DIR / "stage_conv2d_input.hex"
-    w_hex   = OUT_DIR / "stage_conv2d_weights.hex"
-    out_hex = OUT_DIR / "stage_conv2d_output.hex"
+    in_hex   = OUT_DIR / "stage_conv2d_input.hex"
+    w_hex    = OUT_DIR / "stage_conv2d_weights.hex"
+    bias_hex = OUT_DIR / "stage_conv2d_bias.hex"
+    out_hex  = OUT_DIR / "stage_conv2d_output.hex"
     in_hex.write_text(to_hex(qx, DATA_WIDTH))
     w_hex.write_text(to_hex(qw, COEF_WIDTH))
+    bias_hex.write_text(to_hex(qb, DATA_WIDTH))
     out_hex.write_text(to_hex(q_out, DATA_WIDTH))
 
     print()
     print(f"wrote {in_hex}     ({qx.size} values)")
-    print(f"wrote {w_hex}   ({qw.size} values)")
+    print(f"wrote {w_hex}   ({qw.size} values, BN-folded)")
+    print(f"wrote {bias_hex}    ({qb.size} values, BN-folded bias)")
     print(f"wrote {out_hex} ({q_out.size} values)")
 
     # ---------- Meta ----------
     meta = {
-        "layer":         "conv2d (Layer 1, temporal, F1=16, KE=64, padding='same')",
+        "layer":         "conv2d + bn (Layer 1+2 fused, F1=16, KE=64, padding='same')",
+        "bn_folded":     True,
+        "bn_eps":        eps,
         "model_variant": "HaLT subject-dependent",
         "weights_file":  args.weights,
         "data_width":    DATA_WIDTH,
@@ -170,14 +205,17 @@ def main() -> int:
         "pad_bot":       pad_bot,
         "input_order":   "time (slowest) -> electrode (fastest)",
         "weight_order":  "tap (slowest) -> filter",
+        "bias_order":    "filter",
         "output_order":  "time (slowest) -> electrode -> filter",
         "input_shape":   list(qx.shape),
         "weight_shape":  list(qw.shape),
+        "bias_shape":    list(qb.shape),
         "output_shape":  list(q_out.shape),
-        "abs_max_real_w":   float(np.abs(w).max()),
-        "abs_max_real_in":  float(np.abs(x_real).max()),
-        "abs_max_q_out":    int(np.abs(q_out).max()),
-        "saturation_count": n_sat,
+        "abs_max_real_w_folded":   float(np.abs(w).max()),
+        "abs_max_real_bias":       float(np.abs(bias).max()),
+        "abs_max_real_in":         float(np.abs(x_real).max()),
+        "abs_max_q_out":           int(np.abs(q_out).max()),
+        "saturation_count":        n_sat,
     }
     (OUT_DIR / "stage_conv2d_meta.json").write_text(json.dumps(meta, indent=2))
     print(f"wrote {OUT_DIR / 'stage_conv2d_meta.json'}")
