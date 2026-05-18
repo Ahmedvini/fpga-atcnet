@@ -58,6 +58,8 @@ ${YELLOW}Available tests:${NC}
   divider         - Unsigned serial divider sanity test (no h5 refs needed).
   spat_w0         - ImpCBAM spatial attention, sliding window 0 — bit-exact.
   tcfn_w0         - TCFN (4 dilated Conv1D + BN-fold + ELU + 3 residuals), window 0 — bit-exact.
+  dense_w0        - Dense(32→2) classifier, window 0 — bit-exact.
+  head            - Output head (sum logits + argmax) — sanity test (no h5 needed).
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -361,6 +363,37 @@ run_tcfn_w0() {
 }
 
 # ---------------------------------------------------------------------------
+# Dense(32→2) classifier per window.
+# ---------------------------------------------------------------------------
+run_dense_w0() {
+    echo ""
+    echo -e "${GREEN}Running Dense(32->2) classifier (window 0) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_w0_cls_logits.hex ] || die "missing refs — run: python3 scripts/q88_classifier.py --window 0"
+    xvlog --sv \
+        rtl/classifier/dense_classifier.sv \
+        sim/dense_classifier_tb.sv || die "Compilation failed!"
+    xelab dense_classifier_tb -debug typical || die "Elaboration failed!"
+    xsim dense_classifier_tb -runall
+    echo -e "${GREEN}Dense classifier test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Output head (sum + argmax) sanity test.
+# ---------------------------------------------------------------------------
+run_head() {
+    echo ""
+    echo -e "${GREEN}Running output head sanity test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    xvlog --sv \
+        rtl/classifier/output_head.sv \
+        sim/output_head_tb.sv || die "Compilation failed!"
+    xelab output_head_tb -debug typical || die "Elaboration failed!"
+    xsim output_head_tb -runall
+    echo -e "${GREEN}Output head sanity complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -443,6 +476,8 @@ case "$TEST" in
     divider)         run_divider ;;
     spat_w0)         run_spat_w0 ;;
     tcfn_w0)         run_tcfn_w0 ;;
+    dense_w0)        run_dense_w0 ;;
+    head)            run_head ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
