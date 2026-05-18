@@ -41,6 +41,7 @@ module cbam_channel_attn #(
     parameter int    NUM_CH        = 32,
     parameter int    T_WIN         = 6,
     parameter int    D_RED         = 4,
+    parameter int    N_WIN         = 1,           // # of per-window weight banks (1 or 5)
     parameter int    INV_N         = 2796203,    // round(2^24 / 6)
     parameter int    INV_N_SHIFT   = 24,
     parameter int    INV_N_WIDTH   = 24,
@@ -55,6 +56,9 @@ module cbam_channel_attn #(
 ) (
     input  logic                              clk,
     input  logic                              rst,
+
+    // Selects which per-window weight bank to use this inference.
+    input  logic [$clog2(N_WIN > 1 ? N_WIN : 2)-1:0] window_idx,
 
     // Streaming feature map (window of T_WIN vectors).
     input  logic signed [DATA_WIDTH-1:0]      x_in [0:NUM_CH-1],
@@ -73,13 +77,15 @@ module cbam_channel_attn #(
 
     // -------------------------------------------------------------------------
     // Weight memories ($readmemh at elaboration)
+    //   D1_W stride per bank = D_RED * NUM_CH ; index = bank*stride + o*NUM_CH + i
+    //   D2_W stride per bank = NUM_CH * D_RED ; index = bank*stride + o*D_RED + i
     // -------------------------------------------------------------------------
-    // Dense₁: output-major (o, i) flat; index = o*NUM_CH + i.
-    logic signed [COEF_WIDTH-1:0] D1_W [0:D_RED * NUM_CH - 1];
-    logic signed [DATA_WIDTH-1:0] D1_B [0:D_RED - 1];
-    // Dense₂: output-major (o, i) flat; index = o*D_RED + i.
-    logic signed [COEF_WIDTH-1:0] D2_W [0:NUM_CH * D_RED - 1];
-    logic signed [DATA_WIDTH-1:0] D2_B [0:NUM_CH - 1];
+    localparam int D1W_STRIDE = D_RED * NUM_CH;
+    localparam int D2W_STRIDE = NUM_CH * D_RED;
+    logic signed [COEF_WIDTH-1:0] D1_W [0:N_WIN * D1W_STRIDE - 1];
+    logic signed [DATA_WIDTH-1:0] D1_B [0:N_WIN * D_RED   - 1];
+    logic signed [COEF_WIDTH-1:0] D2_W [0:N_WIN * D2W_STRIDE - 1];
+    logic signed [DATA_WIDTH-1:0] D2_B [0:N_WIN * NUM_CH  - 1];
     logic signed [DATA_WIDTH-1:0] LUT  [0:LUT_N - 1];
 
     initial begin
@@ -89,6 +95,13 @@ module cbam_channel_attn #(
         if (D2_B_FILE != "") $readmemh(D2_B_FILE, D2_B);
         if (LUT_FILE  != "") $readmemh(LUT_FILE,  LUT);
     end
+
+    // window_idx selects per-window weight bank. The orchestrator/TB must hold
+    // it stable from the first x_valid of a window through the matching y_valid.
+    wire [31:0] d1w_base = window_idx * D1W_STRIDE;
+    wire [31:0] d1b_base = window_idx * D_RED;
+    wire [31:0] d2w_base = window_idx * D2W_STRIDE;
+    wire [31:0] d2b_base = window_idx * NUM_CH;
 
     localparam logic signed [ACC_WIDTH-1:0] SAT_HI =
         (ACC_WIDTH)'((1 <<< (DATA_WIDTH-1)) - 1);
@@ -188,13 +201,13 @@ module cbam_channel_attn #(
             d1_acc_avg[o] = '0;
             d1_acc_max[o] = '0;
             for (int i = 0; i < NUM_CH; i++) begin
-                d1_acc_avg[o] = d1_acc_avg[o] + $signed(avg_gap[i]) * $signed(D1_W[o * NUM_CH + i]);
-                d1_acc_max[o] = d1_acc_max[o] + $signed(max_gap[i]) * $signed(D1_W[o * NUM_CH + i]);
+                d1_acc_avg[o] = d1_acc_avg[o] + $signed(avg_gap[i]) * $signed(D1_W[d1w_base + o * NUM_CH + i]);
+                d1_acc_max[o] = d1_acc_max[o] + $signed(max_gap[i]) * $signed(D1_W[d1w_base + o * NUM_CH + i]);
             end
             d1_sh_avg[o] = (d1_acc_avg[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[o][DATA_WIDTH-1]}}, D1_B[o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base + o][DATA_WIDTH-1]}}, D1_B[d1b_base + o]});
             d1_sh_max[o] = (d1_acc_max[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[o][DATA_WIDTH-1]}}, D1_B[o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base + o][DATA_WIDTH-1]}}, D1_B[d1b_base + o]});
             // Saturate to Q8.8 then ReLU
             if      (d1_sh_avg[o] >  SAT_HI) d1_avg_h[o] = SAT_HI[DATA_WIDTH-1:0];
             else if (d1_sh_avg[o] <  SAT_LO) d1_avg_h[o] = '0;          // negative → ReLU 0
@@ -222,13 +235,13 @@ module cbam_channel_attn #(
             d2_acc_avg[o] = '0;
             d2_acc_max[o] = '0;
             for (int i = 0; i < D_RED; i++) begin
-                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h[i]) * $signed(D2_W[o * D_RED + i]);
-                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h[i]) * $signed(D2_W[o * D_RED + i]);
+                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
+                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
             end
             d2_sh_avg[o] = (d2_acc_avg[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[o][DATA_WIDTH-1]}}, D2_B[o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base + o][DATA_WIDTH-1]}}, D2_B[d2b_base + o]});
             d2_sh_max[o] = (d2_acc_max[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[o][DATA_WIDTH-1]}}, D2_B[o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base + o][DATA_WIDTH-1]}}, D2_B[d2b_base + o]});
             if      (d2_sh_avg[o] >  SAT_HI) d2_avg_out[o] = SAT_HI[DATA_WIDTH-1:0];
             else if (d2_sh_avg[o] <  SAT_LO) d2_avg_out[o] = SAT_LO[DATA_WIDTH-1:0];
             else                             d2_avg_out[o] = d2_sh_avg[o][DATA_WIDTH-1:0];
