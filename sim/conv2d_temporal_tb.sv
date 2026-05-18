@@ -21,11 +21,11 @@
 
 module conv2d_temporal_tb;
 
-    // --- Parameters (match q88_layer1.py) ---
-    localparam int NUM_EEG_CH    = 64;
+    // --- Parameters (match scripts/q88_layer1.py for HaLT) ---
+    localparam int NUM_EEG_CH    = 5;     // selected channels after Gumbel
     localparam int F1            = 16;
     localparam int KE            = 64;
-    localparam int TRIAL_SAMPLES = 640;
+    localparam int TRIAL_SAMPLES = 600;   // 3 s @ 200 Hz
     localparam int DATA_WIDTH    = 16;
     localparam int COEF_WIDTH    = 16;
     localparam int ACC_WIDTH     = 48;
