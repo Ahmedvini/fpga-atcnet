@@ -52,6 +52,7 @@ ${YELLOW}Available tests:${NC}
   pool2_a         - Layer 9: Branch A temporal AvgPool(7,1) — bit-exact.
   dwise_b         - Layer 10: Branch B depthwise (1,5) D=4 + BN folded — bit-exact.
   sep_b           - Layer 13: Branch B separable Conv2D F_IN=64 + BN folded — bit-exact.
+  sat_add         - Layer 15: Add(BranchA_pool2, BranchB_pool2) saturating add — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -261,6 +262,20 @@ run_sep_b() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 15: Add(BranchA_pool2, BranchB_pool2) saturating add.
+# ---------------------------------------------------------------------------
+run_sat_add() {
+    echo ""
+    echo -e "${GREEN}Running Layer 15 (Add A+B saturate) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_add_output.hex ] || die "missing refs — run: python3 scripts/q88_layer15.py"
+    xvlog --sv rtl/conv/sat_add.sv sim/sat_add_tb.sv || die "Compilation failed!"
+    xelab sat_add_tb -debug typical || die "Elaboration failed!"
+    xsim sat_add_tb -runall
+    echo -e "${GREEN}Add(A,B) test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -337,6 +352,7 @@ case "$TEST" in
     pool2_a)         run_pool2_a ;;
     dwise_b)         run_dwise_b ;;
     sep_b)           run_sep_b ;;
+    sat_add)         run_sat_add ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
