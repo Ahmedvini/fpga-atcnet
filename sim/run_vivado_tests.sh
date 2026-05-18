@@ -53,6 +53,7 @@ ${YELLOW}Available tests:${NC}
   dwise_b         - Layer 10: Branch B depthwise (1,5) D=4 + BN folded — bit-exact.
   sep_b           - Layer 13: Branch B separable Conv2D F_IN=64 + BN folded — bit-exact.
   sat_add         - Layer 15: Add(BranchA_pool2, BranchB_pool2) saturating add — bit-exact.
+  eca2            - Layer 16: ECA₂ (GAP + Conv1D + sigmoid + gate apply) on (10,32) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -276,6 +277,24 @@ run_sat_add() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 16: ECA₂ integrated (GAP + Conv1D + sigmoid + gate apply) on (10, 32).
+# ---------------------------------------------------------------------------
+run_eca2() {
+    echo ""
+    echo -e "${GREEN}Running Layer 16 (ECA₂) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_eca2_output.hex ] || die "missing refs — run: python3 scripts/q88_layer16.py"
+    xvlog --sv \
+        rtl/attention/gap_accumulator.sv \
+        rtl/attention/eca_attention.sv \
+        rtl/attention/gate_apply.sv \
+        sim/eca2_tb.sv || die "Compilation failed!"
+    xelab eca2_tb -debug typical || die "Elaboration failed!"
+    xsim eca2_tb -runall
+    echo -e "${GREEN}ECA₂ integrated test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -353,6 +372,7 @@ case "$TEST" in
     dwise_b)         run_dwise_b ;;
     sep_b)           run_sep_b ;;
     sat_add)         run_sat_add ;;
+    eca2)            run_eca2 ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
