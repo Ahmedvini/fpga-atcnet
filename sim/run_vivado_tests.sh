@@ -61,6 +61,8 @@ ${YELLOW}Available tests:${NC}
   dense_w0        - Dense(32→2) classifier, window 0 — bit-exact.
   head            - Output head (sum logits + argmax) — sanity test (no h5 needed).
   chan_all        - ImpCBAM channel attn across all 5 sliding windows (N_WIN=5) — bit-exact.
+  spat_all        - ImpCBAM spatial attn across all 5 sliding windows (N_WIN=5) — bit-exact.
+  tcfn_all        - TCFN across all 5 sliding windows (N_WIN=5) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -411,6 +413,39 @@ run_chan_all() {
 }
 
 # ---------------------------------------------------------------------------
+# ImpCBAM spatial attention — all 5 sliding windows (N_WIN=5).
+# ---------------------------------------------------------------------------
+run_spat_all() {
+    echo ""
+    echo -e "${GREEN}Running ImpCBAM spatial attn (all 5 windows) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_spat_conv_w.hex ] || die "missing combined refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/util/serial_divider.sv \
+        rtl/attention/cbam_spatial_attn.sv \
+        sim/cbam_spatial_attn_all_tb.sv || die "Compilation failed!"
+    xelab cbam_spatial_attn_all_tb -debug typical || die "Elaboration failed!"
+    xsim cbam_spatial_attn_all_tb -runall
+    echo -e "${GREEN}ImpCBAM spatial attn (all windows) test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# TCFN — all 5 sliding windows (N_WIN=5).
+# ---------------------------------------------------------------------------
+run_tcfn_all() {
+    echo ""
+    echo -e "${GREEN}Running TCFN (all 5 windows) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_tcfn_w0.hex ] || die "missing combined refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/conv/tcfn.sv \
+        sim/tcfn_all_tb.sv || die "Compilation failed!"
+    xelab tcfn_all_tb -debug typical || die "Elaboration failed!"
+    xsim tcfn_all_tb -runall
+    echo -e "${GREEN}TCFN (all windows) test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -496,6 +531,8 @@ case "$TEST" in
     dense_w0)        run_dense_w0 ;;
     head)            run_head ;;
     chan_all)        run_chan_all ;;
+    spat_all)        run_spat_all ;;
+    tcfn_all)        run_tcfn_all ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;

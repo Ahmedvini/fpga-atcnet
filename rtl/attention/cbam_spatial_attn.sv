@@ -325,6 +325,8 @@ module cbam_spatial_attn #(
 
             // -----------------------------------------------------------------
             // Phase 2: gate apply (runs concurrently with S_READY state).
+            // After T_WIN outputs are emitted, drop back to S_IDLE so the
+            // next window's first x_valid is treated as a fresh frame.
             // -----------------------------------------------------------------
             if (state == S_READY && apply_valid) begin
                 for (int c = 0; c < NUM_CH; c++) begin
@@ -334,7 +336,12 @@ module cbam_spatial_attn #(
                     y_out[c] <= sat_q88({{16{p[31]}}, p});
                 end
                 y_valid   <= 1'b1;
-                apply_idx <= (apply_idx == T_WIN - 1) ? '0 : apply_idx + 1;
+                if (apply_idx == T_WIN - 1) begin
+                    apply_idx <= '0;
+                    state     <= S_IDLE;
+                end else begin
+                    apply_idx <= apply_idx + 1;
+                end
             end
         end
     end
