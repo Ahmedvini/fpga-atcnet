@@ -116,21 +116,38 @@ module cbam_channel_attn #(
 
     localparam logic signed [DATA_WIDTH-1:0] DATA_MIN = {1'b1, {(DATA_WIDTH-1){1'b0}}};
 
+    // frame_started: 1 once we've seen at least one x_valid of the current
+    // frame. On the first x_valid of a new frame we *reset* the accumulator
+    // to x_in rather than adding to whatever stale value remains from the
+    // previous frame.
+    logic frame_started;
+
     always_ff @(posedge clk) begin
         if (rst) begin
+            frame_started <= 1'b0;
             for (int c = 0; c < NUM_CH; c++) begin
                 avg_acc[c] <= '0;
                 max_acc[c] <= DATA_MIN;
             end
-        end else if (x_valid && frame_last) begin
-            for (int c = 0; c < NUM_CH; c++) begin
-                avg_acc[c] <= $signed(x_in[c]);
-                max_acc[c] <= $signed(x_in[c]);
-            end
         end else if (x_valid) begin
-            for (int c = 0; c < NUM_CH; c++) begin
-                avg_acc[c] <= avg_acc[c] + $signed(x_in[c]);
-                if ($signed(x_in[c]) > max_acc[c]) max_acc[c] <= $signed(x_in[c]);
+            if (!frame_started) begin
+                // First input of a fresh frame.
+                for (int c = 0; c < NUM_CH; c++) begin
+                    avg_acc[c] <= $signed({{(ACC_WIDTH-DATA_WIDTH){x_in[c][DATA_WIDTH-1]}}, x_in[c]});
+                    max_acc[c] <= $signed(x_in[c]);
+                end
+                frame_started <= !frame_last;     // stays cleared if single-element frame
+            end else if (frame_last) begin
+                // Last input of frame; accumulator + this input is the frame's
+                // final view (handled combinationally in *_final). Mark frame
+                // finished so the next x_valid starts fresh.
+                frame_started <= 1'b0;
+            end else begin
+                for (int c = 0; c < NUM_CH; c++) begin
+                    avg_acc[c] <= avg_acc[c]
+                                + $signed({{(ACC_WIDTH-DATA_WIDTH){x_in[c][DATA_WIDTH-1]}}, x_in[c]});
+                    if ($signed(x_in[c]) > max_acc[c]) max_acc[c] <= $signed(x_in[c]);
+                end
             end
         end
     end

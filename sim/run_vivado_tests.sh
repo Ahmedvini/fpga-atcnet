@@ -60,6 +60,7 @@ ${YELLOW}Available tests:${NC}
   tcfn_w0         - TCFN (4 dilated Conv1D + BN-fold + ELU + 3 residuals), window 0 — bit-exact.
   dense_w0        - Dense(32→2) classifier, window 0 — bit-exact.
   head            - Output head (sum logits + argmax) — sanity test (no h5 needed).
+  chan_all        - ImpCBAM channel attn across all 5 sliding windows (N_WIN=5) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -394,6 +395,22 @@ run_head() {
 }
 
 # ---------------------------------------------------------------------------
+# ImpCBAM channel attention — all 5 sliding windows (N_WIN=5).
+# ---------------------------------------------------------------------------
+run_chan_all() {
+    echo ""
+    echo -e "${GREEN}Running ImpCBAM channel attn (all 5 windows) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_chan_d1w.hex ] || die "missing combined refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/attention/cbam_channel_attn.sv \
+        sim/cbam_channel_attn_all_tb.sv || die "Compilation failed!"
+    xelab cbam_channel_attn_all_tb -debug typical || die "Elaboration failed!"
+    xsim cbam_channel_attn_all_tb -runall
+    echo -e "${GREEN}ImpCBAM channel attn (all windows) test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -478,6 +495,7 @@ case "$TEST" in
     tcfn_w0)         run_tcfn_w0 ;;
     dense_w0)        run_dense_w0 ;;
     head)            run_head ;;
+    chan_all)        run_chan_all ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
