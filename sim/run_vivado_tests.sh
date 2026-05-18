@@ -56,6 +56,7 @@ ${YELLOW}Available tests:${NC}
   eca2            - Layer 16: ECA₂ (GAP + Conv1D + sigmoid + gate apply) on (10,32) — bit-exact.
   chan_w0         - ImpCBAM channel attention, sliding window 0 — bit-exact.
   divider         - Unsigned serial divider sanity test (no h5 refs needed).
+  spat_w0         - ImpCBAM spatial attention, sliding window 0 — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -326,6 +327,23 @@ run_divider() {
 }
 
 # ---------------------------------------------------------------------------
+# ImpCBAM spatial attention (sliding window 0).
+# ---------------------------------------------------------------------------
+run_spat_w0() {
+    echo ""
+    echo -e "${GREEN}Running ImpCBAM spatial attn (window 0) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_w0_spat_output.hex ] || die "missing refs — run: python3 scripts/q88_layer17_spatial.py --window 0"
+    xvlog --sv \
+        rtl/util/serial_divider.sv \
+        rtl/attention/cbam_spatial_attn.sv \
+        sim/cbam_spatial_attn_tb.sv || die "Compilation failed!"
+    xelab cbam_spatial_attn_tb -debug typical || die "Elaboration failed!"
+    xsim cbam_spatial_attn_tb -runall
+    echo -e "${GREEN}ImpCBAM spatial attn test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -406,6 +424,7 @@ case "$TEST" in
     eca2)            run_eca2 ;;
     chan_w0)         run_chan_w0 ;;
     divider)         run_divider ;;
+    spat_w0)         run_spat_w0 ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
