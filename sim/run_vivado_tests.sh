@@ -54,6 +54,7 @@ ${YELLOW}Available tests:${NC}
   sep_b           - Layer 13: Branch B separable Conv2D F_IN=64 + BN folded — bit-exact.
   sat_add         - Layer 15: Add(BranchA_pool2, BranchB_pool2) saturating add — bit-exact.
   eca2            - Layer 16: ECA₂ (GAP + Conv1D + sigmoid + gate apply) on (10,32) — bit-exact.
+  chan_w0         - ImpCBAM channel attention, sliding window 0 — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -295,6 +296,22 @@ run_eca2() {
 }
 
 # ---------------------------------------------------------------------------
+# ImpCBAM channel attention (sliding window 0).
+# ---------------------------------------------------------------------------
+run_chan_w0() {
+    echo ""
+    echo -e "${GREEN}Running ImpCBAM channel attn (window 0) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_w0_chan_output.hex ] || die "missing refs — run: python3 scripts/q88_layer17_chan.py --window 0"
+    xvlog --sv \
+        rtl/attention/cbam_channel_attn.sv \
+        sim/cbam_channel_attn_tb.sv || die "Compilation failed!"
+    xelab cbam_channel_attn_tb -debug typical || die "Elaboration failed!"
+    xsim cbam_channel_attn_tb -runall
+    echo -e "${GREEN}ImpCBAM channel attn test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -373,6 +390,7 @@ case "$TEST" in
     sep_b)           run_sep_b ;;
     sat_add)         run_sat_add ;;
     eca2)            run_eca2 ;;
+    chan_w0)         run_chan_w0 ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
