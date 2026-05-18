@@ -45,6 +45,7 @@ ${YELLOW}Available tests:${NC}
   eca             - Layer 3 ECA₁ gate-compute (Conv1D + σ-LUT) bit-exact.
   gap             - Streaming GAP accumulator (reciprocal-multiply) bit-exact.
   gate_apply      - Per-channel gate multiplier bit-exact.
+  dwise_a         - Layer 4: Branch A depthwise (1,5) D=2 + BN folded — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -152,6 +153,23 @@ run_gate_apply() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 4: Branch A depthwise (1,5) D=2 + BN folded.
+# ---------------------------------------------------------------------------
+run_dwise_a() {
+    echo ""
+    echo -e "${GREEN}Running Layer 4 (Branch A depthwise + BN) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchA_dwise_input.hex   ] || die "missing refs — run: python3 scripts/q88_layer4.py"
+    [ -f data/golden_q88/stage_branchA_dwise_weights.hex ] || die "missing refs — run: python3 scripts/q88_layer4.py"
+    [ -f data/golden_q88/stage_branchA_dwise_bias.hex    ] || die "missing refs — run: python3 scripts/q88_layer4.py"
+    [ -f data/golden_q88/stage_branchA_dwise_output.hex  ] || die "missing refs — run: python3 scripts/q88_layer4.py"
+    xvlog --sv rtl/conv/depthwise_spatial.sv sim/depthwise_spatial_tb.sv || die "Compilation failed!"
+    xelab depthwise_spatial_tb -debug typical || die "Elaboration failed!"
+    xsim depthwise_spatial_tb -runall
+    echo -e "${GREEN}Branch A depthwise test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -221,6 +239,7 @@ case "$TEST" in
     eca)             run_eca ;;
     gap)             run_gap ;;
     gate_apply)      run_gate_apply ;;
+    dwise_a)         run_dwise_a ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;

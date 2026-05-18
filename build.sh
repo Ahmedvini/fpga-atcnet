@@ -21,6 +21,7 @@ MODEL_RTL=(
   rtl/attention/gap_accumulator.sv
   rtl/attention/gate_apply.sv
   rtl/conv/conv2d_temporal.sv
+  rtl/conv/depthwise_spatial.sv
   rtl/window/eeg_channel_adapter.sv
 )
 
