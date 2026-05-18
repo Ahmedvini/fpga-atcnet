@@ -44,6 +44,7 @@ module tcfn #(
     parameter int    LUT_N      = 256,
     parameter int    LUT_RANGE_Q = 2048,
     parameter int    LUT_SHIFT  = 3,
+    parameter int    N_WIN      = 1,
     parameter string W0_FILE    = "",
     parameter string B0_FILE    = "",
     parameter string W1_FILE    = "",
@@ -56,6 +57,9 @@ module tcfn #(
 ) (
     input  logic                              clk,
     input  logic                              rst,
+
+    // Selects per-window weight bank.
+    input  logic [$clog2(N_WIN > 1 ? N_WIN : 2)-1:0] window_idx,
 
     // Phase 1: streaming input (T_WIN vectors, frame_last on the last).
     input  logic signed [DATA_WIDTH-1:0]      x_in [0:F-1],
@@ -73,15 +77,18 @@ module tcfn #(
     // Weight + bias + LUT memories
     // -------------------------------------------------------------------------
     localparam int W_DEPTH = K * F * F;
-    logic signed [COEF_WIDTH-1:0] W0 [0:W_DEPTH-1];
-    logic signed [COEF_WIDTH-1:0] W1 [0:W_DEPTH-1];
-    logic signed [COEF_WIDTH-1:0] W2 [0:W_DEPTH-1];
-    logic signed [COEF_WIDTH-1:0] W3 [0:W_DEPTH-1];
-    logic signed [DATA_WIDTH-1:0] B0 [0:F-1];
-    logic signed [DATA_WIDTH-1:0] B1 [0:F-1];
-    logic signed [DATA_WIDTH-1:0] B2 [0:F-1];
-    logic signed [DATA_WIDTH-1:0] B3 [0:F-1];
+    logic signed [COEF_WIDTH-1:0] W0 [0:N_WIN * W_DEPTH - 1];
+    logic signed [COEF_WIDTH-1:0] W1 [0:N_WIN * W_DEPTH - 1];
+    logic signed [COEF_WIDTH-1:0] W2 [0:N_WIN * W_DEPTH - 1];
+    logic signed [COEF_WIDTH-1:0] W3 [0:N_WIN * W_DEPTH - 1];
+    logic signed [DATA_WIDTH-1:0] B0 [0:N_WIN * F - 1];
+    logic signed [DATA_WIDTH-1:0] B1 [0:N_WIN * F - 1];
+    logic signed [DATA_WIDTH-1:0] B2 [0:N_WIN * F - 1];
+    logic signed [DATA_WIDTH-1:0] B3 [0:N_WIN * F - 1];
     logic signed [DATA_WIDTH-1:0] LUT [0:LUT_N-1];
+
+    wire [31:0] w_base = window_idx * W_DEPTH;
+    wire [31:0] b_base = window_idx * F;
 
     initial begin
         if (W0_FILE != "") $readmemh(W0_FILE, W0);
@@ -200,10 +207,10 @@ module tcfn #(
             for (int ic = 0; ic < F; ic++) begin
                 logic signed [COEF_WIDTH-1:0] wv;
                 unique case (stage)
-                    3'd0: wv = W0[conv_k * F * F + ic * F + conv_of];
-                    3'd1: wv = W1[conv_k * F * F + ic * F + conv_of];
-                    3'd2: wv = W2[conv_k * F * F + ic * F + conv_of];
-                    default: wv = W3[conv_k * F * F + ic * F + conv_of];
+                    3'd0: wv = W0[w_base + conv_k * F * F + ic * F + conv_of];
+                    3'd1: wv = W1[w_base + conv_k * F * F + ic * F + conv_of];
+                    3'd2: wv = W2[w_base + conv_k * F * F + ic * F + conv_of];
+                    default: wv = W3[w_base + conv_k * F * F + ic * F + conv_of];
                 endcase
                 tap_partial = tap_partial + $signed(tap_vec[ic]) * $signed(wv);
             end
@@ -214,10 +221,10 @@ module tcfn #(
     logic signed [DATA_WIDTH-1:0] cur_bias;
     always_comb begin
         unique case (stage)
-            3'd0: cur_bias = B0[conv_of];
-            3'd1: cur_bias = B1[conv_of];
-            3'd2: cur_bias = B2[conv_of];
-            default: cur_bias = B3[conv_of];
+            3'd0: cur_bias = B0[b_base + conv_of];
+            3'd1: cur_bias = B1[b_base + conv_of];
+            3'd2: cur_bias = B2[b_base + conv_of];
+            default: cur_bias = B3[b_base + conv_of];
         endcase
     end
 

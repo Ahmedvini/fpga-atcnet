@@ -26,6 +26,7 @@ module dense_classifier_tb;
     initial forever #(CLK_PERIOD/2) clk = ~clk;
     logic rst;
 
+    logic                         window_idx;
     logic signed [DATA_WIDTH-1:0] x_in   [0:F-1];
     logic                         in_valid;
     logic signed [DATA_WIDTH-1:0] logits [0:N_CLS-1];
@@ -42,6 +43,7 @@ module dense_classifier_tb;
         .BIAS_FILE   ("data/golden_q88/stage_w0_cls_b.hex")
     ) dut (
         .clk(clk), .rst(rst),
+        .window_idx(window_idx),
         .x_in(x_in), .in_valid(in_valid),
         .logits(logits), .out_valid(out_valid)
     );
@@ -51,6 +53,7 @@ module dense_classifier_tb;
     initial begin
         rst = 1'b1;
         in_valid = 1'b0;
+        window_idx = 1'b0;
         for (int i = 0; i < F; i++) x_in[i] = '0;
         repeat (4) @(posedge clk);
         rst = 1'b0;

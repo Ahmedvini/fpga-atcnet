@@ -26,6 +26,7 @@ module cbam_spatial_attn_tb;
     initial forever #(CLK_PERIOD/2) clk = ~clk;
     logic rst;
 
+    logic                         window_idx;
     logic signed [DATA_WIDTH-1:0] x_in        [0:NUM_CH-1];
     logic                         x_valid;
     logic                         frame_last;
@@ -54,6 +55,7 @@ module cbam_spatial_attn_tb;
         .LUT_FILE   ("data/lut/sigmoid_q88.hex")
     ) dut (
         .clk(clk), .rst(rst),
+        .window_idx(window_idx),
         .x_in(x_in), .x_valid(x_valid), .frame_last(frame_last),
         .gate_valid(gate_valid), .gate_out(gate_out),
         .apply_x_in(apply_x_in), .apply_valid(apply_valid),
@@ -97,6 +99,7 @@ module cbam_spatial_attn_tb;
     initial begin
         rst = 1'b1;
         x_valid = 1'b0; frame_last = 1'b0; apply_valid = 1'b0;
+        window_idx = 1'b0;
         for (int i = 0; i < NUM_CH; i++) begin x_in[i] = '0; apply_x_in[i] = '0; end
         repeat (4) @(posedge clk);
         rst = 1'b0;

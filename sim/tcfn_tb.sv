@@ -24,6 +24,7 @@ module tcfn_tb;
     initial forever #(CLK_PERIOD/2) clk = ~clk;
     logic rst;
 
+    logic                         window_idx;
     logic signed [DATA_WIDTH-1:0] x_in       [0:F-1];
     logic                         x_valid;
     logic                         frame_last;
@@ -53,6 +54,7 @@ module tcfn_tb;
         .LUT_FILE("data/lut/elu_q88.hex")
     ) dut (
         .clk(clk), .rst(rst),
+        .window_idx(window_idx),
         .x_in(x_in), .x_valid(x_valid), .frame_last(frame_last),
         .y_out(y_out), .y_valid(y_valid), .done(done)
     );
@@ -94,6 +96,7 @@ module tcfn_tb;
     initial begin
         rst = 1'b1;
         x_valid = 1'b0; frame_last = 1'b0;
+        window_idx = 1'b0;
         for (int i = 0; i < F; i++) x_in[i] = '0;
         repeat (4) @(posedge clk);
         rst = 1'b0;

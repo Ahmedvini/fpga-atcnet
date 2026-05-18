@@ -20,11 +20,14 @@ module dense_classifier #(
     parameter int    FRAC_BITS  = 8,
     parameter int    F          = 32,
     parameter int    N_CLS      = 2,
+    parameter int    N_WIN      = 1,
     parameter string WEIGHTS_FILE = "",
     parameter string BIAS_FILE    = ""
 ) (
     input  logic                              clk,
     input  logic                              rst,
+
+    input  logic [$clog2(N_WIN > 1 ? N_WIN : 2)-1:0] window_idx,
 
     input  logic signed [DATA_WIDTH-1:0]      x_in [0:F-1],
     input  logic                              in_valid,
@@ -33,12 +36,15 @@ module dense_classifier #(
     output logic                              out_valid
 );
 
-    logic signed [COEF_WIDTH-1:0] W [0:N_CLS * F - 1];   // (o, i) row-major
-    logic signed [DATA_WIDTH-1:0] B [0:N_CLS - 1];
+    localparam int W_STRIDE = N_CLS * F;
+    logic signed [COEF_WIDTH-1:0] W [0:N_WIN * W_STRIDE - 1];
+    logic signed [DATA_WIDTH-1:0] B [0:N_WIN * N_CLS   - 1];
     initial begin
         if (WEIGHTS_FILE != "") $readmemh(WEIGHTS_FILE, W);
         if (BIAS_FILE    != "") $readmemh(BIAS_FILE,    B);
     end
+    wire [31:0] w_base = window_idx * W_STRIDE;
+    wire [31:0] b_base = window_idx * N_CLS;
 
     localparam logic signed [ACC_WIDTH-1:0] SAT_HI =
         (ACC_WIDTH)'((1 <<< (DATA_WIDTH-1)) - 1);
@@ -58,10 +64,10 @@ module dense_classifier #(
         for (int o = 0; o < N_CLS; o++) begin
             acc[o] = '0;
             for (int i = 0; i < F; i++) begin
-                acc[o] = acc[o] + $signed(x_in[i]) * $signed(W[o * F + i]);
+                acc[o] = acc[o] + $signed(x_in[i]) * $signed(W[w_base + o * F + i]);
             end
             shifted[o] = (acc[o] >>> FRAC_BITS)
-                       + $signed({{(ACC_WIDTH-DATA_WIDTH){B[o][DATA_WIDTH-1]}}, B[o]});
+                       + $signed({{(ACC_WIDTH-DATA_WIDTH){B[b_base + o][DATA_WIDTH-1]}}, B[b_base + o]});
         end
     end
 

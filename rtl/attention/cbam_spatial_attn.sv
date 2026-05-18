@@ -53,11 +53,15 @@ module cbam_spatial_attn #(
     parameter int    LUT_N         = 1024,
     parameter int    LUT_RANGE_Q   = 1024,
     parameter int    LUT_SHIFT     = 1,
+    parameter int    N_WIN         = 1,
     parameter string CONV_W_FILE   = "",
     parameter string LUT_FILE      = ""
 ) (
     input  logic                              clk,
     input  logic                              rst,
+
+    // Selects per-window weight bank.
+    input  logic [$clog2(N_WIN > 1 ? N_WIN : 2)-1:0] window_idx,
 
     // Phase 1: streaming input (T_WIN vectors, frame_last on the last).
     input  logic signed [DATA_WIDTH-1:0]      x_in [0:NUM_CH-1],
@@ -79,7 +83,9 @@ module cbam_spatial_attn #(
     // -------------------------------------------------------------------------
     // Weights + LUT
     // -------------------------------------------------------------------------
-    logic signed [COEF_WIDTH-1:0] CW  [0:KH * IC_CAT - 1];   // (kh, ic) row-major
+    localparam int CW_STRIDE = KH * IC_CAT;
+    logic signed [COEF_WIDTH-1:0] CW  [0:N_WIN * CW_STRIDE - 1];   // (bank, kh, ic) flat
+    wire   [31:0] cw_base = window_idx * CW_STRIDE;
     logic signed [DATA_WIDTH-1:0] LUT [0:LUT_N - 1];
     initial begin
         if (CONV_W_FILE != "") $readmemh(CONV_W_FILE, CW);
@@ -291,7 +297,7 @@ module cbam_spatial_attn #(
                         if (t_cat_idx >= 0 && t_cat_idx < T_WIN) begin
                             for (int ic = 0; ic < IC_CAT; ic++) begin
                                 acc = acc + $signed(cat_arr[t_cat_idx][ic])
-                                          * $signed(CW[kh * IC_CAT + ic]);
+                                          * $signed(CW[cw_base + kh * IC_CAT + ic]);
                             end
                         end
                     end
