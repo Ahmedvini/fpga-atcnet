@@ -20,8 +20,10 @@ MODEL_RTL=(
   rtl/attention/eca_attention.sv
   rtl/attention/gap_accumulator.sv
   rtl/attention/gate_apply.sv
+  rtl/conv/avg_pool_time.sv
   rtl/conv/conv2d_temporal.sv
   rtl/conv/depthwise_spatial.sv
+  rtl/conv/elu.sv
   rtl/window/eeg_channel_adapter.sv
 )
 

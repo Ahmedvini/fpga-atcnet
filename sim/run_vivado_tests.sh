@@ -46,6 +46,8 @@ ${YELLOW}Available tests:${NC}
   gap             - Streaming GAP accumulator (reciprocal-multiply) bit-exact.
   gate_apply      - Per-channel gate multiplier bit-exact.
   dwise_a         - Layer 4: Branch A depthwise (1,5) D=2 + BN folded — bit-exact.
+  elu             - Layer 5: ELU activation via LUT — bit-exact.
+  pool1_a         - Layer 6: Branch A temporal AvgPool(8,1) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -170,6 +172,35 @@ run_dwise_a() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 5: ELU activation (LUT-based).
+# ---------------------------------------------------------------------------
+run_elu() {
+    echo ""
+    echo -e "${GREEN}Running Layer 5 (ELU) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/lut/elu_q88.hex ] || die "missing ELU LUT — run: python3 scripts/gen_elu_lut.py"
+    [ -f data/golden_q88/stage_branchA_elu_output.hex ] || die "missing refs — run: python3 scripts/q88_layer5.py"
+    xvlog --sv rtl/conv/elu.sv sim/elu_tb.sv || die "Compilation failed!"
+    xelab elu_tb -debug typical || die "Elaboration failed!"
+    xsim elu_tb -runall
+    echo -e "${GREEN}ELU test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Layer 6: temporal AvgPool(8,1) — Branch A pool1 (and reusable elsewhere).
+# ---------------------------------------------------------------------------
+run_pool1_a() {
+    echo ""
+    echo -e "${GREEN}Running Layer 6 (Branch A AvgPool 8,1) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchA_pool1_output.hex ] || die "missing refs — run: python3 scripts/q88_layer6.py"
+    xvlog --sv rtl/conv/avg_pool_time.sv sim/avg_pool_time_tb.sv || die "Compilation failed!"
+    xelab avg_pool_time_tb -debug typical || die "Elaboration failed!"
+    xsim avg_pool_time_tb -runall
+    echo -e "${GREEN}AvgPool test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -240,6 +271,8 @@ case "$TEST" in
     gap)             run_gap ;;
     gate_apply)      run_gate_apply ;;
     dwise_a)         run_dwise_a ;;
+    elu)             run_elu ;;
+    pool1_a)         run_pool1_a ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
