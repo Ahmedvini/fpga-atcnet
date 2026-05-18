@@ -49,6 +49,7 @@ ${YELLOW}Available tests:${NC}
   elu             - Layer 5: ELU activation via LUT — bit-exact.
   pool1_a         - Layer 6: Branch A temporal AvgPool(8,1) — bit-exact.
   sep_a           - Layer 7: Branch A separable Conv2D(32,(16,1)) + BN folded — bit-exact.
+  pool2_a         - Layer 9: Branch A temporal AvgPool(7,1) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -216,6 +217,20 @@ run_sep_a() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 9: Branch A temporal AvgPool(7, 1).
+# ---------------------------------------------------------------------------
+run_pool2_a() {
+    echo ""
+    echo -e "${GREEN}Running Layer 9 (Branch A AvgPool 7,1) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchA_pool2_output.hex ] || die "missing refs — run: python3 scripts/q88_layer8_9.py"
+    xvlog --sv rtl/conv/avg_pool_time.sv sim/avg_pool_time_7_tb.sv || die "Compilation failed!"
+    xelab avg_pool_time_7_tb -debug typical || die "Elaboration failed!"
+    xsim avg_pool_time_7_tb -runall
+    echo -e "${GREEN}Branch A AvgPool(7,1) test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -289,6 +304,7 @@ case "$TEST" in
     elu)             run_elu ;;
     pool1_a)         run_pool1_a ;;
     sep_a)           run_sep_a ;;
+    pool2_a)         run_pool2_a ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
