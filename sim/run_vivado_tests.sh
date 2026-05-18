@@ -48,6 +48,7 @@ ${YELLOW}Available tests:${NC}
   dwise_a         - Layer 4: Branch A depthwise (1,5) D=2 + BN folded — bit-exact.
   elu             - Layer 5: ELU activation via LUT — bit-exact.
   pool1_a         - Layer 6: Branch A temporal AvgPool(8,1) — bit-exact.
+  sep_a           - Layer 7: Branch A separable Conv2D(32,(16,1)) + BN folded — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -201,6 +202,20 @@ run_pool1_a() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 7: Branch A separable Conv2D(32,(16,1)) + BN folded.
+# ---------------------------------------------------------------------------
+run_sep_a() {
+    echo ""
+    echo -e "${GREEN}Running Layer 7 (Branch A separable + BN) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchA_sep_output.hex ] || die "missing refs — run: python3 scripts/q88_layer7.py"
+    xvlog --sv rtl/conv/conv1d_temporal.sv sim/conv1d_temporal_tb.sv || die "Compilation failed!"
+    xelab conv1d_temporal_tb -debug typical || die "Elaboration failed!"
+    xsim conv1d_temporal_tb -runall
+    echo -e "${GREEN}Branch A separable test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -273,6 +288,7 @@ case "$TEST" in
     dwise_a)         run_dwise_a ;;
     elu)             run_elu ;;
     pool1_a)         run_pool1_a ;;
+    sep_a)           run_sep_a ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;

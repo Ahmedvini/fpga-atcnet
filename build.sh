@@ -21,6 +21,7 @@ MODEL_RTL=(
   rtl/attention/gap_accumulator.sv
   rtl/attention/gate_apply.sv
   rtl/conv/avg_pool_time.sv
+  rtl/conv/conv1d_temporal.sv
   rtl/conv/conv2d_temporal.sv
   rtl/conv/depthwise_spatial.sv
   rtl/conv/elu.sv
