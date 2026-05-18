@@ -57,6 +57,7 @@ ${YELLOW}Available tests:${NC}
   chan_w0         - ImpCBAM channel attention, sliding window 0 — bit-exact.
   divider         - Unsigned serial divider sanity test (no h5 refs needed).
   spat_w0         - ImpCBAM spatial attention, sliding window 0 — bit-exact.
+  tcfn_w0         - TCFN (4 dilated Conv1D + BN-fold + ELU + 3 residuals), window 0 — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -344,6 +345,22 @@ run_spat_w0() {
 }
 
 # ---------------------------------------------------------------------------
+# TCFN per-window (sliding window 0).
+# ---------------------------------------------------------------------------
+run_tcfn_w0() {
+    echo ""
+    echo -e "${GREEN}Running TCFN (window 0) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_w0_tcfn_output.hex ] || die "missing refs — run: python3 scripts/q88_layer_tcfn.py --window 0"
+    xvlog --sv \
+        rtl/conv/tcfn.sv \
+        sim/tcfn_tb.sv || die "Compilation failed!"
+    xelab tcfn_tb -debug typical || die "Elaboration failed!"
+    xsim tcfn_tb -runall
+    echo -e "${GREEN}TCFN test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -425,6 +442,7 @@ case "$TEST" in
     chan_w0)         run_chan_w0 ;;
     divider)         run_divider ;;
     spat_w0)         run_spat_w0 ;;
+    tcfn_w0)         run_tcfn_w0 ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
