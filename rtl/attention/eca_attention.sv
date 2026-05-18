@@ -1,185 +1,135 @@
 // =============================================================================
-// eca_attention.sv  —  Efficient Channel Attention (Wang et al. 2020)
+// eca_attention.sv  —  Efficient Channel Attention (ECA) gate computation
 //
-// Implements the ECA operator used by DB-ATCNet:
+// Math (matches scripts/q88_eca1.py bit-exactly):
 //
-//   x ∈ R[N, T, C]     (T = number of time steps in the feature map)
-//   g[c] = mean_t x[n, t, c]                        // global average pool
-//   z[c] = sigmoid( conv1d(g, kernel_size=ECA_K, filters=1) [c] )
-//   y[n, t, c] = x[n, t, c] * z[c]
+//     gap_in   : signed Q8.8 vector of length NUM_CH (global-avg-pooled, fed
+//                from upstream — see the streaming-GAP wrapper module).
+//     z[c]     : 3-tap (or KECA-tap) Conv1D over the channel dim, padding
+//                'same' (KECA//2 zeros on each side), no bias.
+//     gate[c]  : sigmoid(z[c]) via the universal Q8.8 LUT.
 //
-// Compared to SE (squeeze-excite), ECA replaces the two dense MLP layers
-// with a single 1D convolution of small kernel (typically 3 or 5). It has
-// no per-channel bottleneck and no learned bias — much smaller on hardware.
+// Two memory files are loaded at elaboration via $readmemh:
+//   WEIGHTS_FILE  KECA signed Q8.8 entries (Conv1D taps)
+//   LUT_FILE      LUT_N signed Q8.8 entries (sigmoid table from
+//                 scripts/gen_sigmoid_lut.py — universal, not per-subject)
 //
-// Per the original Keras code (kernel_size = round_odd((log2(C)+1)/2)):
-//   C = 16 -> ECA_K = 3
-//   C = 32 -> ECA_K = 3
-// Larger C grows ECA_K slowly. Default here is 3.
-//
-// Pipeline:
-//   Stage A: Streaming GAP — accumulates T samples per channel, then divides.
-//   Stage B: 1D conv of length ECA_K over the per-channel vector (k taps,
-//            1-in 1-out, no bias).
-//   Stage C: hard-sigmoid → per-channel scale factor.
-//   Stage D: Multiply each new x[n,t,c] by scale[c] (held for one frame).
-//
-// This module performs Stages A-C and exposes scale_out[]. The downstream
-// caller does Stage D (a per-channel multiply) on the saved/streamed feature
-// map. Two reasons: (i) the feature map is large and we don't want to buffer
-// it here; (ii) the caller already has the multiply unit for the next layer.
+// Latency: 1 cycle from gap_valid → gate_valid.
+// Resources: NUM_CH * KECA multiplies + one BRAM18K for the LUT.
 //
 // Parameters:
-//   DATA_WIDTH  signed activation width  (default 16)
-//   COEF_WIDTH  signed weight   width    (default 16)
-//   ACC_WIDTH   accumulator width        (default 32)
-//   FRAC_BITS   fixed-point fractional bits (default 8 -> Q8.8)
-//   NUM_CH      number of channels       (default 16)
-//   TIME_STEPS  number of time steps the GAP averages over
-//   ECA_K       1D conv kernel length    (default 3, must be odd)
-//   W_ECA       1D conv weights, length ECA_K, signed Q-format
+//   NUM_CH        Number of channels (16 for ECA₁, 32 for ECA₂).
+//   KECA          Conv1D kernel size (3 for both ECA positions per the spec).
+//   LUT_N         Sigmoid LUT entry count (default 1024).
+//   LUT_RANGE_Q   Q8.8 magnitude that the LUT covers ±range from 0 (default 1024 = ±4.0).
+//   LUT_SHIFT     log2(2*LUT_RANGE_Q / LUT_N). With defaults: 1.
 // =============================================================================
 
 `timescale 1ns / 1ps
 
 module eca_attention #(
-    parameter int DATA_WIDTH = 16,
-    parameter int COEF_WIDTH = 16,
-    parameter int ACC_WIDTH  = 32,
-    parameter int FRAC_BITS  = 8,
-    parameter int NUM_CH     = 16,
-    parameter int TIME_STEPS = 640,
-    parameter int ECA_K      = 3,
-    parameter logic signed [COEF_WIDTH-1:0] W_ECA [0:ECA_K-1] = '{default: 0}
+    parameter int    DATA_WIDTH   = 16,
+    parameter int    COEF_WIDTH   = 16,
+    parameter int    ACC_WIDTH    = 48,
+    parameter int    FRAC_BITS    = 8,
+    parameter int    NUM_CH       = 16,
+    parameter int    KECA         = 3,
+    parameter int    LUT_N        = 1024,
+    parameter int    LUT_RANGE_Q  = 1024,
+    parameter int    LUT_SHIFT    = 1,
+    parameter string WEIGHTS_FILE = "",
+    parameter string LUT_FILE     = ""
 ) (
-    input  logic clk,
-    input  logic rst,
+    input  logic                            clk,
+    input  logic                            rst,
 
-    // Streaming feature map: one (channel-vector) per "time-step".
-    // x_valid pulses TIME_STEPS times per frame.
-    input  logic signed [DATA_WIDTH-1:0] x_in [0:NUM_CH-1],
-    input  logic                         x_valid,
-    input  logic                         frame_last,   // pulse on the last time step
+    input  logic signed [DATA_WIDTH-1:0]    gap_in [0:NUM_CH-1],
+    input  logic                            gap_valid,
 
-    // Per-channel attention scale (Q0.FRAC_BITS, [0,1])
-    output logic signed [DATA_WIDTH-1:0] scale_out [0:NUM_CH-1],
-    output logic                         scale_valid
+    output logic signed [DATA_WIDTH-1:0]    gate_out [0:NUM_CH-1],
+    output logic                            gate_valid
 );
 
-    // ---------------------------------------------------------------------
-    // Q-format helpers
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // Weights + LUT load (elaboration-time via $readmemh)
+    // -------------------------------------------------------------------------
+    logic signed [COEF_WIDTH-1:0] W   [0:KECA-1];
+    logic signed [DATA_WIDTH-1:0] LUT [0:LUT_N-1];
+
+    initial begin
+        if (WEIGHTS_FILE != "") $readmemh(WEIGHTS_FILE, W);
+        else                    for (int k = 0; k < KECA; k++)  W[k] = '0;
+        if (LUT_FILE     != "") $readmemh(LUT_FILE,     LUT);
+        else                    for (int i = 0; i < LUT_N; i++) LUT[i] = '0;
+    end
+
+    // -------------------------------------------------------------------------
+    // Saturation bounds (signed DATA_WIDTH)
+    // -------------------------------------------------------------------------
     localparam logic signed [ACC_WIDTH-1:0] SAT_HI =
-        (ACC_WIDTH)'(((1 <<< (DATA_WIDTH-1)) - 1));
+        (ACC_WIDTH)'((1 <<< (DATA_WIDTH-1)) - 1);
     localparam logic signed [ACC_WIDTH-1:0] SAT_LO =
         -(ACC_WIDTH)'(1 <<< (DATA_WIDTH-1));
 
-    function automatic logic signed [DATA_WIDTH-1:0] sat_shr(
-        input logic signed [ACC_WIDTH-1:0] v, input int shift);
-        logic signed [ACC_WIDTH-1:0] s;
-        begin
-            s = v >>> shift;
-            if (s > SAT_HI)      sat_shr = SAT_HI[DATA_WIDTH-1:0];
-            else if (s < SAT_LO) sat_shr = SAT_LO[DATA_WIDTH-1:0];
-            else                 sat_shr = s[DATA_WIDTH-1:0];
-        end
-    endfunction
+    // -------------------------------------------------------------------------
+    // Stage 1 (combinational): Conv1D + rescale + saturate -> sigmoid input
+    // -------------------------------------------------------------------------
+    localparam int PAD = (KECA - 1) / 2;
 
-    // hard_sigmoid(x) = clamp(x/4 + 0.5, 0, 1) in Q.FRAC_BITS
-    function automatic logic signed [DATA_WIDTH-1:0] hard_sigmoid(
-        input logic signed [DATA_WIDTH-1:0] v);
-        logic signed [DATA_WIDTH:0] tmp;
-        logic signed [DATA_WIDTH:0] half;
-        logic signed [DATA_WIDTH:0] one;
-        begin
-            half = (DATA_WIDTH+1)'(1 <<< (FRAC_BITS-1));
-            one  = (DATA_WIDTH+1)'(1 <<< (FRAC_BITS));
-            tmp  = (v >>> 2) + half;
-            if (tmp < 0)        hard_sigmoid = '0;
-            else if (tmp > one) hard_sigmoid = one[DATA_WIDTH-1:0];
-            else                hard_sigmoid = tmp[DATA_WIDTH-1:0];
-        end
-    endfunction
+    logic signed [DATA_WIDTH-1:0] tap_pad [0:NUM_CH + 2*PAD - 1];
+    logic signed [ACC_WIDTH-1:0]  conv_acc  [0:NUM_CH-1];
+    logic signed [ACC_WIDTH-1:0]  conv_shft [0:NUM_CH-1];
+    logic signed [DATA_WIDTH-1:0] sig_in    [0:NUM_CH-1];
 
-    // log2(TIME_STEPS) — the right-shift to perform the average. We assume
-    // TIME_STEPS is a power of two for clean hardware. If not, replace with
-    // a multiply-by-reciprocal in Q-format.
-    localparam int T_LOG2 = $clog2(TIME_STEPS);
+    always_comb begin
+        // Build zero-padded view of gap_in
+        for (int i = 0;        i < PAD;             i++) tap_pad[i]         = '0;
+        for (int i = 0;        i < NUM_CH;          i++) tap_pad[i + PAD]   = gap_in[i];
+        for (int i = 0;        i < PAD;             i++) tap_pad[NUM_CH + PAD + i] = '0;
 
-    // ---------------------------------------------------------------------
-    // Stage A: Global Average Pool — per-channel running sum
-    // ---------------------------------------------------------------------
-    logic signed [ACC_WIDTH-1:0] sum_acc [0:NUM_CH-1];
-    logic signed [DATA_WIDTH-1:0] g_reg   [0:NUM_CH-1];   // pooled vector
-    logic                         g_valid;
-
-    always_ff @(posedge clk) begin
-        if (rst) begin
-            for (int c = 0; c < NUM_CH; c++) sum_acc[c] <= '0;
-            for (int c = 0; c < NUM_CH; c++) g_reg[c]   <= '0;
-            g_valid <= 1'b0;
-        end else begin
-            g_valid <= 1'b0;
-            if (x_valid) begin
-                for (int c = 0; c < NUM_CH; c++)
-                    sum_acc[c] <= sum_acc[c] + $signed(x_in[c]);
-                if (frame_last) begin
-                    for (int c = 0; c < NUM_CH; c++)
-                        g_reg[c] <= sat_shr(sum_acc[c] + $signed(x_in[c]), T_LOG2);
-                    for (int c = 0; c < NUM_CH; c++) sum_acc[c] <= '0;
-                    g_valid <= 1'b1;
-                end
-            end
+        for (int c = 0; c < NUM_CH; c++) begin
+            conv_acc[c] = '0;
+            for (int k = 0; k < KECA; k++)
+                conv_acc[c] = conv_acc[c] + $signed(tap_pad[c + k]) * $signed(W[k]);
+            conv_shft[c] = conv_acc[c] >>> FRAC_BITS;
+            if (conv_shft[c] > SAT_HI)      sig_in[c] = SAT_HI[DATA_WIDTH-1:0];
+            else if (conv_shft[c] < SAT_LO) sig_in[c] = SAT_LO[DATA_WIDTH-1:0];
+            else                            sig_in[c] = conv_shft[c][DATA_WIDTH-1:0];
         end
     end
 
-    // ---------------------------------------------------------------------
-    // Stage B: 1D conv across the channel dimension (length ECA_K).
-    // Padding is 'same' with kernel centered: index c reads g[c-K/2..c+K/2].
-    // ---------------------------------------------------------------------
-    localparam int HALF_K = ECA_K / 2;
+    // -------------------------------------------------------------------------
+    // Stage 2 (combinational, registered): clip → addr → LUT lookup
+    //
+    //   addr = (clip(sig_in[c], -LUT_RANGE_Q, LUT_RANGE_Q-1) + LUT_RANGE_Q) >>> LUT_SHIFT
+    // -------------------------------------------------------------------------
+    localparam int                                ADDR_W       = $clog2(LUT_N);
+    localparam logic signed [DATA_WIDTH-1:0]      LUT_CLIP_HI  = LUT_RANGE_Q - 1;
+    localparam logic signed [DATA_WIDTH-1:0]      LUT_CLIP_LO  = -LUT_RANGE_Q;
 
-    logic signed [ACC_WIDTH-1:0] eca_acc [0:NUM_CH-1];
-    logic signed [DATA_WIDTH-1:0] s_pre  [0:NUM_CH-1];
-    logic                         s_pre_valid;
+    logic signed [DATA_WIDTH-1:0] clipped [0:NUM_CH-1];
+    logic        [ADDR_W-1:0]     addr    [0:NUM_CH-1];
 
     always_comb begin
         for (int c = 0; c < NUM_CH; c++) begin
-            eca_acc[c] = '0;
-            for (int k = 0; k < ECA_K; k++) begin
-                int idx;
-                idx = c + k - HALF_K;
-                if (idx >= 0 && idx < NUM_CH)
-                    eca_acc[c] = eca_acc[c] + $signed(g_reg[idx]) * $signed(W_ECA[k]);
-            end
+            if      (sig_in[c] >  LUT_CLIP_HI) clipped[c] = LUT_CLIP_HI;
+            else if (sig_in[c] <  LUT_CLIP_LO) clipped[c] = LUT_CLIP_LO;
+            else                               clipped[c] = sig_in[c];
+            addr[c] = ADDR_W'((clipped[c] + LUT_RANGE_Q) >>> LUT_SHIFT);
         end
     end
 
+    // -------------------------------------------------------------------------
+    // Output register
+    // -------------------------------------------------------------------------
     always_ff @(posedge clk) begin
         if (rst) begin
-            for (int c = 0; c < NUM_CH; c++) s_pre[c] <= '0;
-            s_pre_valid <= 1'b0;
+            gate_valid <= 1'b0;
+            for (int c = 0; c < NUM_CH; c++) gate_out[c] <= '0;
         end else begin
-            s_pre_valid <= g_valid;
-            if (g_valid) begin
-                for (int c = 0; c < NUM_CH; c++)
-                    s_pre[c] <= sat_shr(eca_acc[c], FRAC_BITS);
-            end
-        end
-    end
-
-    // ---------------------------------------------------------------------
-    // Stage C: hard_sigmoid -> scale_out
-    // ---------------------------------------------------------------------
-    always_ff @(posedge clk) begin
-        if (rst) begin
-            for (int c = 0; c < NUM_CH; c++) scale_out[c] <= '0;
-            scale_valid <= 1'b0;
-        end else begin
-            scale_valid <= s_pre_valid;
-            if (s_pre_valid) begin
-                for (int c = 0; c < NUM_CH; c++)
-                    scale_out[c] <= hard_sigmoid(s_pre[c]);
+            gate_valid <= gap_valid;
+            if (gap_valid) begin
+                for (int c = 0; c < NUM_CH; c++) gate_out[c] <= LUT[addr[c]];
             end
         end
     end

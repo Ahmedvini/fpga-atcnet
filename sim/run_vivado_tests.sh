@@ -7,10 +7,12 @@
 #   ./sim/run_vivado_tests.sh [test_name]
 #
 # Available tests:
-#   conv2d_temporal  - Bit-exact compare for Layer 1 (Conv2D temporal F1=16
-#                      KE=64 padding='same') against data/golden_q88/* —
-#                      needs `scripts/q88_layer1.py` to have been run first
-#                      to regenerate the new-model Q8.8 reference.
+#   conv2d_temporal  - Bit-exact compare for Layer 1+2 (Conv2D temporal F1=16
+#                      KE=64 padding='same' + BN folded into bias) against
+#                      data/golden_q88/* — needs `scripts/q88_layer1.py`.
+#   eca              - Bit-exact compare for ECA₁ (Conv1D 3-tap + sigmoid LUT)
+#                      against data/golden_q88/stage_eca1_* — needs
+#                      `scripts/gen_sigmoid_lut.py` and `scripts/q88_eca1.py`.
 #
 #   security    - Full security stack regression (SHA-256, HMAC, AES-GCM,
 #                 hash chain, RSA secure boot, eeg_security_top).
@@ -39,7 +41,8 @@ ${YELLOW}Usage:${NC}
   ./sim/run_vivado_tests.sh [test_name]
 
 ${YELLOW}Available tests:${NC}
-  conv2d_temporal - Layer 1 bit-exact regression vs Q8.8 Python reference.
+  conv2d_temporal - Layer 1+2 (Conv2D + folded BN) bit-exact regression.
+  eca             - Layer 3 (ECA₁ Conv1D + sigmoid LUT) bit-exact regression.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -86,6 +89,33 @@ run_conv2d_temporal() {
     xsim conv2d_temporal_tb -runall
 
     echo -e "${GREEN}Layer 1 test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Layer 3: ECA₁ gate-compute (Conv1D + sigmoid LUT).
+# ---------------------------------------------------------------------------
+run_eca() {
+    echo ""
+    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}Running Layer 3: ECA₁ Bit-Exact Test${NC}"
+    echo -e "${GREEN}================================================${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+
+    [ -f data/lut/sigmoid_q88.hex ] || die "missing data/lut/sigmoid_q88.hex — run: python3 scripts/gen_sigmoid_lut.py"
+    [ -f data/golden_q88/stage_eca1_input.hex ] || die "missing ECA₁ refs — run: python3 scripts/q88_eca1.py"
+
+    echo -e "${YELLOW}[1/3] Compiling...${NC}"
+    xvlog --sv \
+        rtl/attention/eca_attention.sv \
+        sim/eca_attention_tb.sv || die "Compilation failed!"
+
+    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
+    xelab eca_attention_tb -debug typical || die "Elaboration failed!"
+
+    echo -e "${YELLOW}[3/3] Simulating...${NC}"
+    xsim eca_attention_tb -runall
+
+    echo -e "${GREEN}ECA₁ test complete!${NC}"
 }
 
 # ---------------------------------------------------------------------------
@@ -155,6 +185,7 @@ run_aes() {
 
 case "$TEST" in
     conv2d_temporal) run_conv2d_temporal ;;
+    eca)             run_eca ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
