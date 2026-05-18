@@ -50,6 +50,8 @@ ${YELLOW}Available tests:${NC}
   pool1_a         - Layer 6: Branch A temporal AvgPool(8,1) — bit-exact.
   sep_a           - Layer 7: Branch A separable Conv2D(32,(16,1)) + BN folded — bit-exact.
   pool2_a         - Layer 9: Branch A temporal AvgPool(7,1) — bit-exact.
+  dwise_b         - Layer 10: Branch B depthwise (1,5) D=4 + BN folded — bit-exact.
+  sep_b           - Layer 13: Branch B separable Conv2D F_IN=64 + BN folded — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -231,6 +233,34 @@ run_pool2_a() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 10: Branch B depthwise (1,5) D=4 + BN folded.
+# ---------------------------------------------------------------------------
+run_dwise_b() {
+    echo ""
+    echo -e "${GREEN}Running Layer 10 (Branch B depthwise + BN) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchB_dwise_output.hex ] || die "missing refs — run: python3 scripts/q88_branchB.py"
+    xvlog --sv rtl/conv/depthwise_spatial.sv sim/depthwise_spatial_b_tb.sv || die "Compilation failed!"
+    xelab depthwise_spatial_b_tb -debug typical || die "Elaboration failed!"
+    xsim depthwise_spatial_b_tb -runall
+    echo -e "${GREEN}Branch B depthwise test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Layer 13: Branch B separable Conv2D(32,(16,1)) F_IN=64 + BN folded.
+# ---------------------------------------------------------------------------
+run_sep_b() {
+    echo ""
+    echo -e "${GREEN}Running Layer 13 (Branch B separable + BN) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchB_sep_output.hex ] || die "missing refs — run: python3 scripts/q88_branchB.py"
+    xvlog --sv rtl/conv/conv1d_temporal.sv sim/conv1d_temporal_b_tb.sv || die "Compilation failed!"
+    xelab conv1d_temporal_b_tb -debug typical || die "Elaboration failed!"
+    xsim conv1d_temporal_b_tb -runall
+    echo -e "${GREEN}Branch B separable test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -305,6 +335,8 @@ case "$TEST" in
     pool1_a)         run_pool1_a ;;
     sep_a)           run_sep_a ;;
     pool2_a)         run_pool2_a ;;
+    dwise_b)         run_dwise_b ;;
+    sep_b)           run_sep_b ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
