@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_vivado_tests.sh  —  ATCNet Vivado Test Runner (Linux)
+# run_vivado_tests.sh  —  DB-ATCNet (HaLT) Vivado Test Runner (Linux)
 #
 # Usage:
 #   chmod +x sim/run_vivado_tests.sh        # first time only
 #   ./sim/run_vivado_tests.sh [test_name]
 #
 # Available tests:
-#   hmac     — All security algorithms (SHA-256, HMAC, AES-GCM, Hash Chain,
-#               RSA Secure Boot, eeg_security_top integration)  ← run this first
-#   aes      — AES-256-GCM standalone test
-#   temporal — Temporal convolution unit test
-#   top      — Top-level integration test
-#   all      — All DSP/RTL modules
-#   help     — Show this help
+#   conv2d_temporal  - Bit-exact compare for Layer 1 (Conv2D temporal F1=16
+#                      KE=64 padding='same') against data/golden_q88/* —
+#                      needs `scripts/q88_layer1.py` to have been run first
+#                      to regenerate the new-model Q8.8 reference.
+#
+#   security    - Full security stack regression (SHA-256, HMAC, AES-GCM,
+#                 hash chain, RSA secure boot, eeg_security_top).
+#   aes         - AES-256-GCM standalone (NIST vectors).
+#   hmac        - SHA-256 + HMAC + Hash Chain + RSA Secure Boot.
+#
+#   help        - Show this help.
 # =============================================================================
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,22 +30,27 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 show_help() {
-    echo ""
-    echo -e "${CYAN}ATCNet Vivado Test Runner (Linux)${NC}"
-    echo "================================="
-    echo ""
-    echo -e "${YELLOW}Usage:${NC}"
-    echo "  ./sim/run_vivado_tests.sh [test_name]"
-    echo ""
-    echo -e "${YELLOW}Available Tests:${NC}"
-    echo "  security - ALL security algorithms (full combined run) ← use this"
-    echo "  hmac     - SHA-256 + HMAC + Hash Chain + RSA Secure Boot + integration"
-    echo "  aes      - AES-256-GCM standalone test"
-    echo "  temporal - Temporal convolution unit test"
-    echo "  top      - Top-level integration test"
-    echo "  all      - All DSP/RTL modules"
-    echo "  help     - Show this message"
-    echo ""
+    cat <<EOF
+
+${CYAN}DB-ATCNet (HaLT) Vivado Test Runner${NC}
+====================================
+
+${YELLOW}Usage:${NC}
+  ./sim/run_vivado_tests.sh [test_name]
+
+${YELLOW}Available tests:${NC}
+  conv2d_temporal - Layer 1 bit-exact regression vs Q8.8 Python reference.
+  security        - Full security stack (SHA/HMAC/AES/secure boot).
+  aes             - AES-256-GCM standalone test.
+  hmac            - SHA/HMAC/HashChain/RSA boot integration.
+  help            - Show this message.
+
+${YELLOW}Note:${NC} The Conv2D Layer-1 test reads data/golden_q88/stage_conv2d_*.hex.
+       Regenerate those for the new HaLT shape (5x600) with:
+           python3 scripts/q88_layer1.py
+       (script will be updated for HaLT dims in a follow-up commit)
+
+EOF
 }
 
 die() {
@@ -49,44 +58,56 @@ die() {
     exit 1
 }
 
-run_security() {
+# ---------------------------------------------------------------------------
+# Layer 1: bit-exact regression of conv2d_temporal vs Q8.8 reference.
+# ---------------------------------------------------------------------------
+run_conv2d_temporal() {
     echo ""
     echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running ALL Security Algorithms${NC}"
+    echo -e "${GREEN}Running Layer 1: Conv2D Temporal Bit-Exact Test${NC}"
     echo -e "${GREEN}================================================${NC}"
-    echo ""
-    echo "Algorithms covered:"
-    echo "  [1] SHA-256 core          (FIPS 180-4 test vectors)"
-    echo "  [2] HMAC-SHA-256          (RFC 4231 test vectors)"
-    echo "  [3] AES-256-GCM           (NIST standalone vectors)"
-    echo "  [4] AES-256-GCM           (integration with HMAC)"
-    echo "  [5] SHA-256 Hash Chain    (tamper-evident audit log)"
-    echo "  [6] RSA-2048 Secure Boot  (bitstream authentication)"
-    echo "  [7] eeg_security_top      (all algorithms integrated)"
-    echo ""
-
     cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
 
-    # ── Part 1: AES-256-GCM standalone (NIST vectors) ──────────────────
-    echo -e "${YELLOW}── Part 1/2: AES-256-GCM standalone ──${NC}"
+    if [ ! -f data/golden_q88/stage_conv2d_input.hex ] || \
+       [ ! -f data/golden_q88/stage_conv2d_weights.hex ] || \
+       [ ! -f data/golden_q88/stage_conv2d_output.hex ]; then
+        die "Q8.8 reference missing. Run: python3 scripts/q88_layer1.py"
+    fi
+
     echo -e "${YELLOW}[1/3] Compiling...${NC}"
+    xvlog --sv \
+        rtl/conv/conv2d_temporal.sv \
+        sim/conv2d_temporal_tb.sv || die "Compilation failed!"
+
+    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
+    xelab conv2d_temporal_tb -debug typical || die "Elaboration failed!"
+
+    echo -e "${YELLOW}[3/3] Simulating...${NC}"
+    xsim conv2d_temporal_tb -runall
+
+    echo -e "${GREEN}Layer 1 test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
+# Security stack — unchanged from original, just kept here.
+# ---------------------------------------------------------------------------
+run_security() {
+    echo ""
+    echo -e "${GREEN}Running ALL Security Algorithms${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+
+    # Part 1: AES-256-GCM standalone
+    echo -e "${YELLOW}-- AES-256-GCM standalone --${NC}"
     xvlog --sv \
         rtl/security/gcm_ghash.sv \
         rtl/security/aes_256_core.sv \
         rtl/security/aes_256_gcm.sv \
         sim/aes_256_gcm_tb.sv || die "AES compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
     xelab aes_256_gcm_tb -debug typical || die "AES elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
     xsim aes_256_gcm_tb -runall
 
-    echo ""
-
-    # ── Part 2: Full security stack (all remaining algorithms) ──────────
-    echo -e "${YELLOW}── Part 2/2: Full security stack ──${NC}"
-    echo -e "${YELLOW}[1/3] Compiling...${NC}"
+    # Part 2: full security stack
+    echo -e "${YELLOW}-- Full security stack --${NC}"
     xvlog --sv \
         rtl/security/sha256_core.sv \
         rtl/security/sha256_hash_chain.sv \
@@ -98,28 +119,14 @@ run_security() {
         rtl/security/secure_boot.sv \
         rtl/security/eeg_security_top.sv \
         sim/hmac_sha256_tb.sv || die "Security compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
     xelab hmac_sha256_tb -debug typical || die "Security elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
     xsim hmac_sha256_tb -runall
 
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}All security algorithms simulation complete!${NC}"
-    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}Security stack complete!${NC}"
 }
 
 run_hmac() {
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running Full Security Test Suite${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
     cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
-
-    echo -e "${YELLOW}[1/3] Compiling RTL and testbench...${NC}"
     xvlog --sv \
         rtl/security/sha256_core.sv \
         rtl/security/sha256_hash_chain.sv \
@@ -131,128 +138,25 @@ run_hmac() {
         rtl/security/secure_boot.sv \
         rtl/security/eeg_security_top.sv \
         sim/hmac_sha256_tb.sv || die "Compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating design...${NC}"
     xelab hmac_sha256_tb -debug typical || die "Elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Running simulation...${NC}"
     xsim hmac_sha256_tb -runall
-
-    echo ""
-    echo -e "${GREEN}Security test complete!${NC}"
 }
 
 run_aes() {
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running AES-256-GCM Standalone Test${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
     cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
-
-    echo -e "${YELLOW}[1/3] Compiling...${NC}"
     xvlog --sv \
         rtl/security/gcm_ghash.sv \
         rtl/security/aes_256_core.sv \
         rtl/security/aes_256_gcm.sv \
         sim/aes_256_gcm_tb.sv || die "Compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
     xelab aes_256_gcm_tb -debug typical || die "Elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
     xsim aes_256_gcm_tb -runall
-
-    echo ""
-    echo -e "${GREEN}AES test complete!${NC}"
-}
-
-run_temporal() {
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running Temporal Conv Unit Test${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
-    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
-
-    echo -e "${YELLOW}[1/3] Compiling...${NC}"
-    xvlog --sv \
-        rtl/conv/temporal_conv.sv \
-        sim/temporal_conv_tb.sv || die "Compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
-    xelab temporal_conv_tb -debug typical || die "Elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
-    xsim temporal_conv_tb -runall
-
-    echo ""
-    echo -e "${GREEN}Temporal test complete!${NC}"
-}
-
-run_top() {
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running Top-Level Integration Test${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
-    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
-
-    echo -e "${YELLOW}[1/3] Compiling...${NC}"
-    xvlog --sv \
-        rtl/conv/temporal_conv.sv \
-        rtl/conv/dual_branch_conv.sv \
-        rtl/conv/channel_scale.sv \
-        rtl/window/window_gen.sv \
-        rtl/window/window_reader.sv \
-        rtl/top.sv \
-        sim/top_tb.sv || die "Compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
-    xelab top_tb -debug typical || die "Elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
-    xsim top_tb -runall
-
-    echo ""
-    echo -e "${GREEN}Top test complete!${NC}"
-}
-
-run_all() {
-    echo ""
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}Running All DSP/RTL Modules Test${NC}"
-    echo -e "${GREEN}================================================${NC}"
-    echo ""
-    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
-
-    echo -e "${YELLOW}[1/3] Compiling...${NC}"
-    xvlog --sv \
-        rtl/conv/temporal_conv.sv \
-        rtl/conv/dual_branch_conv.sv \
-        rtl/conv/channel_scale.sv \
-        rtl/window/window_gen.sv \
-        rtl/window/window_reader.sv \
-        rtl/fusion/temporal_fusion.sv \
-        rtl/attention/temporal_multihead_attention.sv \
-        sim/all_modules_tb.sv || die "Compilation failed!"
-
-    echo -e "${YELLOW}[2/3] Elaborating...${NC}"
-    xelab all_modules_tb -debug typical || die "Elaboration failed!"
-
-    echo -e "${YELLOW}[3/3] Simulating...${NC}"
-    xsim all_modules_tb -runall
-
-    echo ""
-    echo -e "${GREEN}All-modules test complete!${NC}"
 }
 
 case "$TEST" in
-    security) run_security ;;
-    hmac)     run_hmac ;;
-    aes)      run_aes ;;
-    temporal) run_temporal ;;
-    top)      run_top ;;
-    all)      run_all ;;
-    help|*)   show_help ;;
+    conv2d_temporal) run_conv2d_temporal ;;
+    security)        run_security ;;
+    hmac)            run_hmac ;;
+    aes)             run_aes ;;
+    help|*)          show_help ;;
 esac

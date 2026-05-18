@@ -1,0 +1,98 @@
+# =============================================================================
+# .gitignore — FPGA DB-ATCNet repo
+#
+# We keep:  rtl/, sim/, build.sh, sim/run_vivado_tests.sh, scripts/*.py
+#           (our own helpers: gen_stimulus, golden_model, h5_to_mem, q88_*),
+#           CLAUDE.md / README.md / architecture diagrams.
+#
+# We drop:  the trained model weights (.h5), the cloned reference repos
+#           under scripts/db_atcnet_ref{,2}/, the generated golden tensors
+#           and weight exports under data/, and all Vivado/xsim/yosys
+#           working files.
+# =============================================================================
+
+# ----- Trained model + Python golden artefacts (regeneratable) -----
+*.h5
+*.hdf5
+*.keras
+*.pt
+*.pth
+*.ckpt
+*.tflite
+*.onnx
+
+# Generated golden tensors + Q-format references + weight .mem exports.
+# Anything under data/ is reproducible from the .h5 via scripts/*.py.
+/data/
+
+# Trained model artefacts (per-subject .h5 + CV results + training plots).
+# Reproducible from the AI team's training pipeline; not part of the RTL.
+/weights/
+
+# Cloned reference Python source (re-clone with `git clone` from upstream).
+/scripts/db_atcnet_ref/
+/scripts/db_atcnet_ref2/
+
+# Claude Code per-user overrides (auto-approve config, etc.)
+.claude/settings.local.json
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# ----- Vivado / xsim / xvlog / xelab work products -----
+xsim.dir/
+.Xil/
+*.jou
+*.log
+*.pb
+*.wdb
+*.wcfg
+*.str
+webtalk*.log
+webtalk*.backup.log
+xvlog.pb
+xelab.pb
+xsim.pb
+
+# Vivado project files (if you create one)
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.srcs/
+*.gen/
+*.xpr
+*.bit
+*.bin
+*.ltx
+*.hwh
+
+# Yosys output
+*.synlist
+*.netlist.json
+
+# ----- Waveform / capture files (regeneratable, often large) -----
+*.vcd
+*.fst
+*.ghw
+*.evcd
+*.lxt
+*.lxt2
+
+# ----- Editor / OS noise -----
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.history/
+*.code-workspace

@@ -1,34 +1,28 @@
 #!/usr/bin/env bash
 #
-# Elaboration / parse-check for the DB-ATCNet RTL.
+# Elaboration / parse-check for the DB-ATCNet RTL (HaLT variant, 5-of-19
+# channels, 2-class output, subject-dependent weights).
 #
 # Primary tool: Vivado (xvlog + xelab). The design uses SystemVerilog
 # constructs (unpacked-array parameters, '{default:0} initializers, multi-
 # dimensional unpacked arrays) that Yosys 0.33's built-in SV frontend does
-# not support without sv2v. If sv2v is installed we also run a Yosys stat
-# pass for a quick gate-count estimate.
+# not support without sv2v.
 #
-# Usage:   ./build.sh [top]
-# Default top: top   (other tops: top_resource_eval, integrated_example)
+# Usage:   ./build.sh [top_module]
+# Default top: conv2d_temporal      (Layer 1 standalone — only built so far)
 
 set -euo pipefail
 
-TOP="${1:-top}"
+TOP="${1:-conv2d_temporal}"
 
+# Model RTL (HaLT pipeline). Add new modules here as they are built.
 MODEL_RTL=(
-  rtl/top.sv
-  rtl/top_resource_eval.sv
-  rtl/integrated_example.sv
-  rtl/attention/temporal_multihead_attention.sv
-  rtl/conv/channel_scale.sv
-  rtl/conv/dual_branch_conv.sv
-  rtl/conv/Spatial_conv.sv
-  rtl/conv/temporal_conv.sv
-  rtl/fusion/temporal_fusion.sv
-  rtl/window/window_gen.sv
-  rtl/window/window_reader.sv
+  rtl/attention/eca_attention.sv
+  rtl/conv/conv2d_temporal.sv
+  rtl/window/eeg_channel_adapter.sv
 )
 
+# Security stack — separate from the AI pipeline, built alongside.
 SEC_RTL=(
   rtl/security/aes_256_core.sv
   rtl/security/aes_256_gcm.sv
@@ -49,7 +43,7 @@ WORK_DIR="$(mktemp -d -t atcnet_build.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 ABS_MODEL=( "${MODEL_RTL[@]/#/$REPO_ROOT/}" )
-ABS_SEC=( "${SEC_RTL[@]/#/$REPO_ROOT/}" )
+ABS_SEC=(   "${SEC_RTL[@]/#/$REPO_ROOT/}" )
 
 echo "[build] xvlog parse-check (model + security)..."
 ( cd "$WORK_DIR" && xvlog -sv "${ABS_MODEL[@]}" "${ABS_SEC[@]}" > xvlog.log 2>&1 ) || {

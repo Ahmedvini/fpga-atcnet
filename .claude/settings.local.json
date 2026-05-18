@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(xelab work.top)",
-      "Bash(xelab work.top_resource_eval)",
-      "Bash(xelab work.integrated_example)"
-    ]
-  }
-}
