@@ -72,6 +72,7 @@ ${YELLOW}Available tests:${NC}
   eca2_pipe       - ECA₂ orchestrator (eca1_pipeline reused with NUM_CH=32, N=10) — bit-exact.
   post_eca1       - branchA + branchB + sat_add + ECA₂ → (10,32) eca2_buf — bit-exact.
   c2e1            - Conv2D + ECA₁ wrapper (raw EEG → ECA₁-gated stream) — bit-exact.
+  top             - Full RTL inference (raw EEG → 1-bit class) — end-to-end.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -630,6 +631,42 @@ run_c2e1() {
 }
 
 # ---------------------------------------------------------------------------
+# Full end-to-end RTL inference (raw EEG → 1-bit class).
+# ---------------------------------------------------------------------------
+run_top() {
+    echo ""
+    echo -e "${GREEN}Running full end-to-end RTL inference${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_chan_d1w.hex ] || die "missing combined refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/conv/conv2d_temporal.sv \
+        rtl/conv/depthwise_spatial.sv \
+        rtl/conv/elu.sv \
+        rtl/conv/avg_pool_time.sv \
+        rtl/conv/conv1d_temporal_tm.sv \
+        rtl/conv/branch_pipeline.sv \
+        rtl/conv/sat_add.sv \
+        rtl/conv/tcfn.sv \
+        rtl/util/serial_divider.sv \
+        rtl/attention/gap_accumulator.sv \
+        rtl/attention/eca_attention.sv \
+        rtl/attention/gate_apply.sv \
+        rtl/attention/eca1_pipeline.sv \
+        rtl/attention/cbam_channel_attn.sv \
+        rtl/attention/cbam_spatial_attn.sv \
+        rtl/classifier/dense_classifier.sv \
+        rtl/classifier/output_head.sv \
+        rtl/db_atcnet_window_pipeline.sv \
+        rtl/db_atcnet_post_eca1.sv \
+        rtl/db_atcnet_conv2d_eca1.sv \
+        rtl/db_atcnet_top.sv \
+        sim/db_atcnet_top_tb.sv || die "Compilation failed!"
+    xelab db_atcnet_top_tb -debug typical || die "Elaboration failed!"
+    xsim db_atcnet_top_tb -runall
+    echo -e "${GREEN}Top end-to-end test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -726,6 +763,7 @@ case "$TEST" in
     eca2_pipe)       run_eca2_pipe ;;
     post_eca1)       run_post_eca1 ;;
     c2e1)            run_c2e1 ;;
+    top)             run_top ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
