@@ -73,6 +73,7 @@ ${YELLOW}Available tests:${NC}
   post_eca1       - branchA + branchB + sat_add + ECA₂ → (10,32) eca2_buf — bit-exact.
   c2e1            - Conv2D + ECA₁ wrapper (raw EEG → ECA₁-gated stream) — bit-exact.
   top             - Full RTL inference (raw EEG → 1-bit class) — end-to-end.
+  axil            - AXI4-Lite weight loader + weight_bank sanity test.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -667,6 +668,22 @@ run_top() {
 }
 
 # ---------------------------------------------------------------------------
+# AXI4-Lite weight loader sanity test (no h5 refs needed).
+# ---------------------------------------------------------------------------
+run_axil() {
+    echo ""
+    echo -e "${GREEN}Running AXI4-Lite weight loader sanity${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    xvlog --sv \
+        rtl/weights/axi_lite_weight_loader.sv \
+        rtl/weights/weight_bank.sv \
+        sim/axil_weight_loader_tb.sv || die "Compilation failed!"
+    xelab axil_weight_loader_tb -debug typical || die "Elaboration failed!"
+    xsim axil_weight_loader_tb -runall
+    echo -e "${GREEN}AXI4-Lite sanity complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -764,6 +781,7 @@ case "$TEST" in
     post_eca1)       run_post_eca1 ;;
     c2e1)            run_c2e1 ;;
     top)             run_top ;;
+    axil)            run_axil ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
