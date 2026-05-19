@@ -66,6 +66,7 @@ ${YELLOW}Available tests:${NC}
   pipe            - Full 5-window pipeline (slice + ImpCBAM + TCFN + Dense + head) → 1-bit class.
   sep_a_tm        - Time-multiplexed conv1d_temporal (F_IN parallel, KE*F_IN cycles) — bit-exact.
   sep_b_tm        - Same time-mux variant, Branch B (F_IN=64) — bit-exact.
+  eca1_pipe       - ECA₁ orchestrator (gap_acc + eca_attn + gate_apply + buffer) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -499,6 +500,25 @@ run_sep_b_tm() {
 }
 
 # ---------------------------------------------------------------------------
+# ECA₁ orchestrator (3000-frame ingest + gate compute + replay).
+# ---------------------------------------------------------------------------
+run_eca1_pipe() {
+    echo ""
+    echo -e "${GREEN}Running ECA₁ orchestrator bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_eca1_output.hex ] || die "missing refs — run: python3 scripts/q88_eca1.py"
+    xvlog --sv \
+        rtl/attention/gap_accumulator.sv \
+        rtl/attention/eca_attention.sv \
+        rtl/attention/gate_apply.sv \
+        rtl/attention/eca1_pipeline.sv \
+        sim/eca1_pipeline_tb.sv || die "Compilation failed!"
+    xelab eca1_pipeline_tb -debug typical || die "Elaboration failed!"
+    xsim eca1_pipeline_tb -runall
+    echo -e "${GREEN}ECA₁ orchestrator test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -589,6 +609,7 @@ case "$TEST" in
     pipe)            run_pipe ;;
     sep_a_tm)        run_sep_a_tm ;;
     sep_b_tm)        run_sep_b_tm ;;
+    eca1_pipe)       run_eca1_pipe ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
