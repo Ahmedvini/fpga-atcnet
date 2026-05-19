@@ -58,12 +58,14 @@ foreach f $rtl_files { add_files -norecurse $f }
 # Pin file paths to absolute so $readmemh works during synthesis.
 set_property file_type SystemVerilog [get_files *.sv]
 
+# Pull in the XDC constraints (clock + I/O delays + RAM_STYLE hints).
+add_files -fileset constrs_1 -norecurse constraints/db_atcnet_axi.xdc
+set_property USED_IN {synthesis implementation out_of_context} \
+    [get_files constraints/db_atcnet_axi.xdc]
+
 # Synthesize. -mode out_of_context skips I/O buffer insertion so we don't
 # need to constrain every clk/reset port to a physical pin.
 synth_design -top $top -part $part -include_dirs $repo -mode out_of_context
-
-# Now that a design exists, add a 100 MHz clock for the timing report.
-create_clock -name clk -period 10.000 [get_ports clk]
 
 # Reports.
 report_utilization                 -file $out/utilization.txt
