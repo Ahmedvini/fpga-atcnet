@@ -71,6 +71,7 @@ ${YELLOW}Available tests:${NC}
   branchB_pipe    - Same chain, Branch B (D=4, F2=64) — bit-exact.
   eca2_pipe       - ECA₂ orchestrator (eca1_pipeline reused with NUM_CH=32, N=10) — bit-exact.
   post_eca1       - branchA + branchB + sat_add + ECA₂ → (10,32) eca2_buf — bit-exact.
+  c2e1            - Conv2D + ECA₁ wrapper (raw EEG → ECA₁-gated stream) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -608,6 +609,27 @@ run_post_eca1() {
 }
 
 # ---------------------------------------------------------------------------
+# Conv2D + ECA₁ wrapper (raw EEG → ECA₁-gated stream).
+# ---------------------------------------------------------------------------
+run_c2e1() {
+    echo ""
+    echo -e "${GREEN}Running Conv2D + ECA₁ wrapper bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_eca1_output.hex ] || die "missing refs — run: python3 scripts/q88_eca1.py"
+    xvlog --sv \
+        rtl/conv/conv2d_temporal.sv \
+        rtl/attention/gap_accumulator.sv \
+        rtl/attention/eca_attention.sv \
+        rtl/attention/gate_apply.sv \
+        rtl/attention/eca1_pipeline.sv \
+        rtl/db_atcnet_conv2d_eca1.sv \
+        sim/db_atcnet_conv2d_eca1_tb.sv || die "Compilation failed!"
+    xelab db_atcnet_conv2d_eca1_tb -debug typical || die "Elaboration failed!"
+    xsim db_atcnet_conv2d_eca1_tb -runall
+    echo -e "${GREEN}Conv2D + ECA₁ wrapper test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -703,6 +725,7 @@ case "$TEST" in
     branchB_pipe)    run_branchB_pipe ;;
     eca2_pipe)       run_eca2_pipe ;;
     post_eca1)       run_post_eca1 ;;
+    c2e1)            run_c2e1 ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
