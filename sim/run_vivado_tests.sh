@@ -63,6 +63,7 @@ ${YELLOW}Available tests:${NC}
   chan_all        - ImpCBAM channel attn across all 5 sliding windows (N_WIN=5) — bit-exact.
   spat_all        - ImpCBAM spatial attn across all 5 sliding windows (N_WIN=5) — bit-exact.
   tcfn_all        - TCFN across all 5 sliding windows (N_WIN=5) — bit-exact.
+  pipe            - Full 5-window pipeline (slice + ImpCBAM + TCFN + Dense + head) → 1-bit class.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -446,6 +447,28 @@ run_tcfn_all() {
 }
 
 # ---------------------------------------------------------------------------
+# Full 5-window pipeline → final argmax class (end-to-end bit-exact).
+# ---------------------------------------------------------------------------
+run_pipe() {
+    echo ""
+    echo -e "${GREEN}Running 5-window end-to-end pipeline test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_chan_d1w.hex ] || die "missing combined refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/util/serial_divider.sv \
+        rtl/attention/cbam_channel_attn.sv \
+        rtl/attention/cbam_spatial_attn.sv \
+        rtl/conv/tcfn.sv \
+        rtl/classifier/dense_classifier.sv \
+        rtl/classifier/output_head.sv \
+        rtl/db_atcnet_window_pipeline.sv \
+        sim/db_atcnet_window_pipeline_tb.sv || die "Compilation failed!"
+    xelab db_atcnet_window_pipeline_tb -debug typical || die "Elaboration failed!"
+    xsim db_atcnet_window_pipeline_tb -runall
+    echo -e "${GREEN}Pipeline end-to-end test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -533,6 +556,7 @@ case "$TEST" in
     chan_all)        run_chan_all ;;
     spat_all)        run_spat_all ;;
     tcfn_all)        run_tcfn_all ;;
+    pipe)            run_pipe ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
