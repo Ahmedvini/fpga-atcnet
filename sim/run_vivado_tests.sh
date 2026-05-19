@@ -75,6 +75,7 @@ ${YELLOW}Available tests:${NC}
   top             - Full RTL inference (raw EEG → 1-bit class) — end-to-end.
   axil            - AXI4-Lite weight loader + weight_bank sanity test.
   gca             - Gumbel channel adapter (19→5) with runtime LUT — sanity.
+  axi             - Deployment AXIS+AXI-Lite wrapper end-to-end test.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -700,6 +701,45 @@ run_gca() {
 }
 
 # ---------------------------------------------------------------------------
+# Deployment wrapper: AXIS raw EEG + AXI-Lite control/mailbox.
+# ---------------------------------------------------------------------------
+run_axi() {
+    echo ""
+    echo -e "${GREEN}Running deployment AXIS+AXI-Lite wrapper test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/all_chan_d1w.hex ] || die "missing refs — run: python3 scripts/cat_window_weights.py"
+    xvlog --sv \
+        rtl/conv/conv2d_temporal.sv \
+        rtl/conv/depthwise_spatial.sv \
+        rtl/conv/elu.sv \
+        rtl/conv/avg_pool_time.sv \
+        rtl/conv/conv1d_temporal_tm.sv \
+        rtl/conv/branch_pipeline.sv \
+        rtl/conv/sat_add.sv \
+        rtl/conv/tcfn.sv \
+        rtl/util/serial_divider.sv \
+        rtl/attention/gap_accumulator.sv \
+        rtl/attention/eca_attention.sv \
+        rtl/attention/gate_apply.sv \
+        rtl/attention/eca1_pipeline.sv \
+        rtl/attention/cbam_channel_attn.sv \
+        rtl/attention/cbam_spatial_attn.sv \
+        rtl/classifier/dense_classifier.sv \
+        rtl/classifier/output_head.sv \
+        rtl/db_atcnet_window_pipeline.sv \
+        rtl/db_atcnet_post_eca1.sv \
+        rtl/db_atcnet_conv2d_eca1.sv \
+        rtl/db_atcnet_top.sv \
+        rtl/weights/axi_lite_weight_loader.sv \
+        rtl/window/gumbel_channel_adapter.sv \
+        rtl/db_atcnet_axi.sv \
+        sim/db_atcnet_axi_tb.sv || die "Compilation failed!"
+    xelab db_atcnet_axi_tb -debug typical || die "Elaboration failed!"
+    xsim db_atcnet_axi_tb -runall
+    echo -e "${GREEN}Deployment wrapper test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -799,6 +839,7 @@ case "$TEST" in
     top)             run_top ;;
     axil)            run_axil ;;
     gca)             run_gca ;;
+    axi)             run_axi ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;

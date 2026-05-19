@@ -9,23 +9,51 @@
 # not support without sv2v.
 #
 # Usage:   ./build.sh [top_module]
-# Default top: conv2d_temporal      (Layer 1 standalone — only built so far)
+# Default top: db_atcnet_axi  (deployment AXI-Stream + AXI-Lite wrapper)
+#
+# Alternate useful tops (all bit-exact-verified upstream):
+#   db_atcnet_top              raw EEG → 1-bit class (no AXI wrappers)
+#   db_atcnet_window_pipeline  ECA₂-buf → class (post-ECA₂ only)
+#   db_atcnet_post_eca1        ECA₁-gated stream → ECA₂ buf
+#   db_atcnet_conv2d_eca1      raw EEG → ECA₁-gated stream
 
 set -euo pipefail
 
-TOP="${1:-conv2d_temporal}"
+TOP="${1:-db_atcnet_axi}"
 
-# Model RTL (HaLT pipeline). Add new modules here as they are built.
+# Model RTL (HaLT pipeline). Order matters where one module instantiates another.
 MODEL_RTL=(
-  rtl/attention/eca_attention.sv
-  rtl/attention/gap_accumulator.sv
-  rtl/attention/gate_apply.sv
-  rtl/conv/avg_pool_time.sv
-  rtl/conv/conv1d_temporal.sv
+  # Core compute primitives
+  rtl/util/serial_divider.sv
   rtl/conv/conv2d_temporal.sv
   rtl/conv/depthwise_spatial.sv
   rtl/conv/elu.sv
+  rtl/conv/avg_pool_time.sv
+  rtl/conv/conv1d_temporal.sv
+  rtl/conv/conv1d_temporal_tm.sv
+  rtl/conv/sat_add.sv
+  rtl/conv/tcfn.sv
+  rtl/attention/eca_attention.sv
+  rtl/attention/gap_accumulator.sv
+  rtl/attention/gate_apply.sv
+  rtl/attention/cbam_channel_attn.sv
+  rtl/attention/cbam_spatial_attn.sv
+  rtl/classifier/dense_classifier.sv
+  rtl/classifier/output_head.sv
+  # Sub-orchestrators
+  rtl/attention/eca1_pipeline.sv
+  rtl/conv/branch_pipeline.sv
+  # Top-level integrators
+  rtl/db_atcnet_window_pipeline.sv
+  rtl/db_atcnet_post_eca1.sv
+  rtl/db_atcnet_conv2d_eca1.sv
+  rtl/db_atcnet_top.sv
+  # Deployment plumbing
+  rtl/weights/axi_lite_weight_loader.sv
+  rtl/weights/weight_bank.sv
+  rtl/window/gumbel_channel_adapter.sv
   rtl/window/eeg_channel_adapter.sv
+  rtl/db_atcnet_axi.sv
 )
 
 # Security stack — separate from the AI pipeline, built alongside.
