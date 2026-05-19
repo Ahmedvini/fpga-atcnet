@@ -68,6 +68,7 @@ ${YELLOW}Available tests:${NC}
   sep_b_tm        - Same time-mux variant, Branch B (F_IN=64) — bit-exact.
   eca1_pipe       - ECA₁ orchestrator (gap_acc + eca_attn + gate_apply + buffer) — bit-exact.
   branchA_pipe    - Full Branch A chain (dwise + ELU + pool8 + sep + ELU + pool7) — bit-exact.
+  branchB_pipe    - Same chain, Branch B (D=4, F2=64) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -540,6 +541,26 @@ run_branchA_pipe() {
 }
 
 # ---------------------------------------------------------------------------
+# Branch B pipeline (D=4, F2=64).
+# ---------------------------------------------------------------------------
+run_branchB_pipe() {
+    echo ""
+    echo -e "${GREEN}Running Branch B pipeline bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchB_pool2_output.hex ] || die "missing refs — run: python3 scripts/q88_branchB.py"
+    xvlog --sv \
+        rtl/conv/depthwise_spatial.sv \
+        rtl/conv/elu.sv \
+        rtl/conv/avg_pool_time.sv \
+        rtl/conv/conv1d_temporal_tm.sv \
+        rtl/conv/branch_pipeline.sv \
+        sim/branch_pipeline_b_tb.sv || die "Compilation failed!"
+    xelab branch_pipeline_b_tb -debug typical || die "Elaboration failed!"
+    xsim branch_pipeline_b_tb -runall
+    echo -e "${GREEN}Branch B pipeline test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -632,6 +653,7 @@ case "$TEST" in
     sep_b_tm)        run_sep_b_tm ;;
     eca1_pipe)       run_eca1_pipe ;;
     branchA_pipe)    run_branchA_pipe ;;
+    branchB_pipe)    run_branchB_pipe ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
