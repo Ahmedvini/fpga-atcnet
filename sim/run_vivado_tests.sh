@@ -74,6 +74,7 @@ ${YELLOW}Available tests:${NC}
   c2e1            - Conv2D + ECA₁ wrapper (raw EEG → ECA₁-gated stream) — bit-exact.
   top             - Full RTL inference (raw EEG → 1-bit class) — end-to-end.
   axil            - AXI4-Lite weight loader + weight_bank sanity test.
+  gca             - Gumbel channel adapter (19→5) with runtime LUT — sanity.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -684,6 +685,21 @@ run_axil() {
 }
 
 # ---------------------------------------------------------------------------
+# Gumbel 19→5 channel adapter sanity test.
+# ---------------------------------------------------------------------------
+run_gca() {
+    echo ""
+    echo -e "${GREEN}Running Gumbel 19→5 channel adapter sanity${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    xvlog --sv \
+        rtl/window/gumbel_channel_adapter.sv \
+        sim/gumbel_channel_adapter_tb.sv || die "Compilation failed!"
+    xelab gumbel_channel_adapter_tb -debug typical || die "Elaboration failed!"
+    xsim gumbel_channel_adapter_tb -runall
+    echo -e "${GREEN}Gumbel adapter sanity complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -782,6 +798,7 @@ case "$TEST" in
     c2e1)            run_c2e1 ;;
     top)             run_top ;;
     axil)            run_axil ;;
+    gca)             run_gca ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
