@@ -64,6 +64,7 @@ ${YELLOW}Available tests:${NC}
   spat_all        - ImpCBAM spatial attn across all 5 sliding windows (N_WIN=5) — bit-exact.
   tcfn_all        - TCFN across all 5 sliding windows (N_WIN=5) — bit-exact.
   pipe            - Full 5-window pipeline (slice + ImpCBAM + TCFN + Dense + head) → 1-bit class.
+  sep_a_tm        - Time-multiplexed conv1d_temporal (F_IN parallel, KE*F_IN cycles) — bit-exact.
   security        - Full security stack (SHA/HMAC/AES/secure boot).
   aes             - AES-256-GCM standalone test.
   hmac            - SHA/HMAC/HashChain/RSA boot integration.
@@ -469,6 +470,20 @@ run_pipe() {
 }
 
 # ---------------------------------------------------------------------------
+# Time-multiplexed conv1d_temporal_tm.sv on Branch A separable golden.
+# ---------------------------------------------------------------------------
+run_sep_a_tm() {
+    echo ""
+    echo -e "${GREEN}Running time-mux conv1d_temporal (Branch A sep) bit-exact test${NC}"
+    cd "$PROJECT_ROOT" || die "Cannot cd to $PROJECT_ROOT"
+    [ -f data/golden_q88/stage_branchA_sep_output.hex ] || die "missing refs — run: python3 scripts/q88_layer7.py"
+    xvlog --sv rtl/conv/conv1d_temporal_tm.sv sim/conv1d_temporal_tm_tb.sv || die "Compilation failed!"
+    xelab conv1d_temporal_tm_tb -debug typical || die "Elaboration failed!"
+    xsim conv1d_temporal_tm_tb -runall
+    echo -e "${GREEN}Time-mux conv1d test complete!${NC}"
+}
+
+# ---------------------------------------------------------------------------
 # Security stack — unchanged from original, just kept here.
 # ---------------------------------------------------------------------------
 run_security() {
@@ -557,6 +572,7 @@ case "$TEST" in
     spat_all)        run_spat_all ;;
     tcfn_all)        run_tcfn_all ;;
     pipe)            run_pipe ;;
+    sep_a_tm)        run_sep_a_tm ;;
     security)        run_security ;;
     hmac)            run_hmac ;;
     aes)             run_aes ;;
