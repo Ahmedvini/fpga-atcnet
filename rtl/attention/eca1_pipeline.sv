@@ -73,12 +73,16 @@ module eca1_pipeline #(
     logic                         gap_valid;
     logic signed [DATA_WIDTH-1:0] gap_out [0:NUM_CH-1];
 
+    // gap_acc must see x_valid on EVERY ingested sample, including the very
+    // first (which is consumed in S_IDLE while transitioning to S_INGEST).
+    wire gap_x_valid = ((state == S_IDLE) || (state == S_INGEST)) && x_valid;
+
     gap_accumulator #(
         .DATA_WIDTH(DATA_WIDTH), .NUM_CH(NUM_CH), .ACC_WIDTH(32),
         .INV_N(INV_N), .INV_N_SHIFT(INV_N_SHIFT), .INV_N_WIDTH(INV_N_WIDTH)
     ) u_gap (
         .clk(clk), .rst(rst),
-        .x_in(x_in), .x_valid(state == S_INGEST && x_valid),
+        .x_in(x_in), .x_valid(gap_x_valid),
         .frame_last(frame_last_internal),
         .gap_out(gap_out), .gap_valid(gap_valid)
     );
