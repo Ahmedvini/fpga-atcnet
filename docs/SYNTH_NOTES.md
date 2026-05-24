@@ -34,21 +34,70 @@ vivado -mode batch -source synth/synth_fit.tcl \
 This:
 1. Creates an in-memory project against the ZCU104 part.
 2. Adds every RTL file + the constraints file.
-3. Calls `synth_design -mode out_of_context`.
-4. Writes `build/synth_<part>/utilization.txt` + `timing.txt`.
+3. Adds every weight/LUT `.hex` under `data/golden_q88/` and `data/lut/`
+   as a Memory Initialization File, and binds them as `-generic`
+   parameter strings on the `db_atcnet_axi` top.
+4. Calls `synth_design -mode out_of_context`.
+5. Writes `build/synth_<part>/utilization.txt` + `timing.txt`.
 
 Host needs ≥ 12 GB RAM (Vivado peaks ~10 GB during DSP packing on this
 design size). If you OOM-killed, free up memory / close other apps.
+
+### Why every `*_FILE` generic MUST be bound
+
+The NN modules — `conv2d_temporal`, `depthwise_spatial`,
+`conv1d_temporal_tm`, `tcfn`, `dense_classifier`, `eca_attention`,
+`cbam_channel_attn`, `cbam_spatial_attn` — store their weights and
+sigmoid/ELU LUTs in internal arrays initialised at elaboration via
+`$readmemh(WEIGHTS_FILE, …)`. If the parameter is the default empty
+string, `$readmemh` is a silent no-op. The array stays all-zero,
+Vivado constant-propagates the entire datapath into a single
+"output = 0" wire, and synthesis reports something like:
+
+```
+LUTs: 304   FFs: 264   DSPs: 0   BRAMs: 0
+```
+
+That is the design *synthesised out of existence*, not a successful
+fit. Look for tell-tale log lines:
+
+```
+WEIGHTS_FILE bound to: (null)
+WARNING: [Synth 8-6014] Unused sequential element shift_reg_reg[…] was removed
+```
+
+`synth_fit.tcl` guards against this by `add_files`-ing every `.hex`
+into the project as a Memory Initialization File AND passing each
+`-generic <NAME>=<path>` on the `synth_design` command. The script
+aborts early if any file is missing.
+
+### Weights are baked into the bitstream (current limitation)
+
+The PS uses AXI-Lite for the `status` / `class` mailbox and `irq_done`,
+but the NN weights are ROM in this build — retraining requires
+re-running `synth_fit.tcl` with the new `.hex` files. The scaffolding
+for runtime weight reload (`rtl/weights/weight_bank.sv`,
+`rtl/weights/axi_lite_weight_loader.sv`) is present but the NN modules
+don't yet instantiate `weight_bank` — they own their own static arrays.
+Wiring that through is a future refactor.
 
 ### B — Vivado GUI, OOC project
 
 1. Vivado → Manage IP → Create New Project, Part = `xczu7ev-ffvc1156-2-e`.
 2. Add every `.sv` under `rtl/`.
 3. Add `constraints/db_atcnet_axi.xdc`.
-4. Set Top = `db_atcnet_axi`.
-5. Right-click the synthesis run → **Synthesis Settings** → check
+4. Add every `.hex` under `data/golden_q88/` and `data/lut/` as
+   *Memory Initialization Files* — without these the network synthesises
+   to a constant zero (see warning above).
+5. Set Top = `db_atcnet_axi`.
+6. Project → **Generics / Parameters** → set every `*_FILE` parameter
+   (see `synth/synth_fit.tcl` for the full list) to its `.hex` path.
+7. Right-click the synthesis run → **Synthesis Settings** → check
    *"Out-of-context"* OR set `-mode out_of_context` in the `more options`.
-6. Run Synthesis.
+8. Run Synthesis.
+
+Path A (the Tcl batch flow) does all of 4/6/7 automatically — strongly
+preferred unless you specifically need the GUI run.
 
 ### C — Inside an IPI block design (final deployment path)
 
