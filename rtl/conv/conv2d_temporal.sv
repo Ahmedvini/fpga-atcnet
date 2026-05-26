@@ -109,18 +109,35 @@ module conv2d_temporal #(
     end
 
     // -------------------------------------------------------------------------
-    // 16 parallel MACs over 64 taps each
+    // 16 parallel MACs over 64 taps each — 2-stage pipeline.
+    //
+    // Synth observation: the combinational version produced a 61-deep DSP48E2
+    // cascade per filter (~43 ns logic delay, WNS = -36.7 ns vs 10 ns target).
+    // Split the 64-tap sum into two 32-tap halves with a register between
+    // them. Vivado now packs two ~30-deep DSP cascades in parallel; the
+    // critical path drops to roughly half of the original. Adds 1 cycle of
+    // latency; throughput unchanged. No tap snapshot needed because both
+    // halves of the multiply use the SAME cycle's live tap[].
     // -------------------------------------------------------------------------
-    logic signed [ACC_WIDTH-1:0] acc [0:F1-1];
+    logic signed [ACC_WIDTH-1:0] sum_lo [0:F1-1];   // sum of taps[0..KE/2-1]
+    logic signed [ACC_WIDTH-1:0] sum_hi [0:F1-1];   // sum of taps[KE/2..KE-1]
 
     always_comb begin
         for (int f = 0; f < F1; f++) begin
-            acc[f] = '0;
-            for (int k = 0; k < KE; k++) begin
-                acc[f] = acc[f] + $signed(tap[k]) * $signed(W[k][f]);
-            end
+            sum_lo[f] = '0;
+            sum_hi[f] = '0;
+            for (int k = 0; k < KE/2; k++)
+                sum_lo[f] = sum_lo[f] + $signed(tap[k]) * $signed(W[k][f]);
+            for (int k = KE/2; k < KE; k++)
+                sum_hi[f] = sum_hi[f] + $signed(tap[k]) * $signed(W[k][f]);
         end
     end
+
+    // Pipeline registers between the two MAC halves and the final add/sat.
+    logic signed [ACC_WIDTH-1:0]            sum_lo_reg    [0:F1-1];
+    logic signed [ACC_WIDTH-1:0]            sum_hi_reg    [0:F1-1];
+    logic                                   in_valid_d1;
+    logic [$clog2(NUM_EEG_CH)-1:0]          in_electrode_d1;
 
     // -------------------------------------------------------------------------
     // Rescale (>>> FRAC_BITS) + symmetric saturation to DATA_WIDTH
@@ -132,16 +149,33 @@ module conv2d_temporal #(
 
     always_ff @(posedge clk) begin
         if (rst) begin
-            out_valid     <= 1'b0;
-            out_electrode <= '0;
-            for (int f = 0; f < F1; f++) out_filter[f] <= '0;
-        end else begin
-            out_valid     <= in_valid;
-            out_electrode <= in_electrode;
+            out_valid       <= 1'b0;
+            out_electrode   <= '0;
+            in_valid_d1     <= 1'b0;
+            in_electrode_d1 <= '0;
             for (int f = 0; f < F1; f++) begin
+                sum_lo_reg[f] <= '0;
+                sum_hi_reg[f] <= '0;
+                out_filter[f] <= '0;
+            end
+        end else begin
+            // Stage 0 → stage 1: latch the two half-sums and the valid/electrode.
+            in_valid_d1     <= in_valid;
+            in_electrode_d1 <= in_electrode;
+            for (int f = 0; f < F1; f++) begin
+                sum_lo_reg[f] <= sum_lo[f];
+                sum_hi_reg[f] <= sum_hi[f];
+            end
+
+            // Stage 1 → output: combine, bias, saturate.
+            out_valid     <= in_valid_d1;
+            out_electrode <= in_electrode_d1;
+            for (int f = 0; f < F1; f++) begin
+                logic signed [ACC_WIDTH-1:0] acc_full;
                 logic signed [ACC_WIDTH-1:0] shifted;
                 logic signed [ACC_WIDTH-1:0] with_bias;
-                shifted   = acc[f] >>> FRAC_BITS;
+                acc_full  = sum_lo_reg[f] + sum_hi_reg[f];
+                shifted   = acc_full >>> FRAC_BITS;
                 with_bias = shifted + $signed({{(ACC_WIDTH-DATA_WIDTH){B[f][DATA_WIDTH-1]}}, B[f]});
                 if (with_bias > SAT_HI)      out_filter[f] <= SAT_HI[DATA_WIDTH-1:0];
                 else if (with_bias < SAT_LO) out_filter[f] <= SAT_LO[DATA_WIDTH-1:0];
