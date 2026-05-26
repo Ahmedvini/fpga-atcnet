@@ -52,9 +52,26 @@ module eca1_pipeline #(
 );
 
     // -------------------------------------------------------------------------
-    // Internal buffer (3000 × 16 Q8.8 for ECA₁).
+    // Internal buffer (N_FRAMES rows × NUM_CH*DATA_WIDTH bits/row). Declared
+    // as a 1D unpacked array of FLAT bit-vectors (not a 2D unpacked array of
+    // 16-bit elements) so Vivado treats each row as one memory word and maps
+    // the whole thing to BRAM with a single read+write port. The previous
+    // 2D-unpacked form `buf_mem[N][C]` (or packed-channel `[C][W] buf_mem[N]`)
+    // triggers the "3D-RAM / Record/Struct" path which falls back to FFs.
     // -------------------------------------------------------------------------
-    logic signed [DATA_WIDTH-1:0] buf_mem [0:N_FRAMES-1][0:NUM_CH-1];
+    localparam int BUF_W = NUM_CH * DATA_WIDTH;
+
+    (* ram_style = "block" *)
+    logic [BUF_W-1:0] buf_mem [0:N_FRAMES-1];
+
+    // Pack the per-channel input array into a single wide word for write.
+    logic [BUF_W-1:0] x_in_flat;
+    for (genvar gi = 0; gi < NUM_CH; gi++) begin : g_pack_x
+        assign x_in_flat[gi*DATA_WIDTH +: DATA_WIDTH] = x_in[gi];
+    end
+
+    // BRAM output register — one wide read per cycle in S_REPLAY.
+    logic [BUF_W-1:0] buf_rd_flat;
 
     // -------------------------------------------------------------------------
     // Counters / FSM
@@ -109,11 +126,17 @@ module eca1_pipeline #(
 
     // -------------------------------------------------------------------------
     // Gate apply (per-channel multiplier).
+    // apply_x is now driven combinationally from the BRAM read register so
+    // it tracks buf_rd_packed without an extra register stage.
     // -------------------------------------------------------------------------
     logic signed [DATA_WIDTH-1:0] apply_x [0:NUM_CH-1];
     logic                         apply_valid;
     logic signed [DATA_WIDTH-1:0] apply_y [0:NUM_CH-1];
     logic                         apply_y_valid;
+
+    for (genvar gi = 0; gi < NUM_CH; gi++) begin : g_unpack_apply_x
+        assign apply_x[gi] = $signed(buf_rd_flat[gi*DATA_WIDTH +: DATA_WIDTH]);
+    end
 
     gate_apply #(
         .DATA_WIDTH(DATA_WIDTH), .NUM_CH(NUM_CH), .FRAC_BITS(8), .ACC_WIDTH(32)
@@ -134,9 +157,9 @@ module eca1_pipeline #(
             apply_valid <= 1'b0;
             y_valid     <= 1'b0;
             done        <= 1'b0;
+            buf_rd_flat <= '0;
             for (int i = 0; i < NUM_CH; i++) begin
                 gate_latched[i] <= '0;
-                apply_x[i]      <= '0;
                 y_out[i]        <= '0;
             end
         end else begin
@@ -148,15 +171,17 @@ module eca1_pipeline #(
                 S_IDLE: begin
                     apply_valid <= 1'b0;
                     if (x_valid) begin
-                        // First sample of new frame.
-                        for (int i = 0; i < NUM_CH; i++) buf_mem[0][i] <= x_in[i];
+                        // First sample of new frame. cnt is still 0 here, so
+                        // this writes to buf_mem[0]; using buf_mem[cnt] keeps
+                        // a single write path (cnt) for BRAM inference.
+                        buf_mem[cnt] <= x_in_flat;
                         cnt   <= 1;
                         state <= S_INGEST;
                     end
                 end
                 S_INGEST: begin
                     if (x_valid) begin
-                        for (int i = 0; i < NUM_CH; i++) buf_mem[cnt][i] <= x_in[i];
+                        buf_mem[cnt] <= x_in_flat;
                         if (cnt == N_FRAMES - 1) begin
                             cnt   <= 0;
                             state <= S_WAIT_GATE;
@@ -174,9 +199,10 @@ module eca1_pipeline #(
                 end
                 S_REPLAY: begin
                     // Drive apply_valid for the buffer entry; gate_apply
-                    // emits y_out one cycle later.
+                    // emits y_out one cycle later. Single wide BRAM read;
+                    // apply_x is unpacked combinationally from buf_rd_packed.
                     apply_valid <= 1'b1;
-                    for (int i = 0; i < NUM_CH; i++) apply_x[i] <= buf_mem[cnt][i];
+                    buf_rd_flat <= buf_mem[cnt];
                     if (cnt == N_FRAMES - 1) begin
                         cnt   <= 0;
                         state <= S_DONE;

@@ -213,6 +213,15 @@ module cbam_channel_attn #(
     logic signed [DATA_WIDTH-1:0]   d1_avg_h   [0:D_RED-1];
     logic signed [DATA_WIDTH-1:0]   d1_max_h   [0:D_RED-1];
 
+    // Pipeline registers between Dense1 and Dense2 (timing closure).
+    // D1 evaluates combinationally on the frame_last cycle; d1_*_h is latched
+    // here, and D2 reads from d1_*_h_reg on the next cycle. Splits the long
+    // x_in → accumulator → D1 → D2 → sigmoid critical path roughly in half.
+    // gate_valid now pulses 2 cycles after frame_last (was 1 cycle).
+    logic signed [DATA_WIDTH-1:0]   d1_avg_h_reg [0:D_RED-1];
+    logic signed [DATA_WIDTH-1:0]   d1_max_h_reg [0:D_RED-1];
+    logic                           d1_ready;
+
     always_comb begin
         for (int o = 0; o < D_RED; o++) begin
             d1_acc_avg[o] = '0;
@@ -252,8 +261,8 @@ module cbam_channel_attn #(
             d2_acc_avg[o] = '0;
             d2_acc_max[o] = '0;
             for (int i = 0; i < D_RED; i++) begin
-                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
-                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
+                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h_reg[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
+                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h_reg[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
             end
             d2_sh_avg[o] = (d2_acc_avg[o] >>> FRAC_BITS)
                          + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base + o][DATA_WIDTH-1]}}, D2_B[d2b_base + o]});
@@ -300,16 +309,34 @@ module cbam_channel_attn #(
 
     logic signed [DATA_WIDTH-1:0] gate_reg [0:NUM_CH-1];
 
+    // Pipeline stage 1 → stage 2: latch d1_*_h on the frame_last cycle into
+    // d1_*_h_reg. D2 then reads from d1_*_h_reg combinationally on the next
+    // cycle; gate_reg latches at the end of that cycle. gate_valid pulses
+    // 2 cycles after frame_last.
     always_ff @(posedge clk) begin
         if (rst) begin
+            d1_ready  <= 1'b0;
             gate_valid <= 1'b0;
+            for (int o = 0; o < D_RED; o++) begin
+                d1_avg_h_reg[o] <= '0;
+                d1_max_h_reg[o] <= '0;
+            end
             for (int c = 0; c < NUM_CH; c++) begin
                 gate_reg[c] <= '0;
                 gate_out[c] <= '0;
             end
         end else begin
-            gate_valid <= (x_valid && frame_last);
+            d1_ready  <= (x_valid && frame_last);
+            gate_valid <= d1_ready;
+
             if (x_valid && frame_last) begin
+                for (int o = 0; o < D_RED; o++) begin
+                    d1_avg_h_reg[o] <= d1_avg_h[o];
+                    d1_max_h_reg[o] <= d1_max_h[o];
+                end
+            end
+
+            if (d1_ready) begin
                 for (int c = 0; c < NUM_CH; c++) begin
                     gate_reg[c] <= LUT[addr[c]];
                     gate_out[c] <= LUT[addr[c]];

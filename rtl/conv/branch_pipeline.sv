@@ -111,11 +111,26 @@ module branch_pipeline #(
     );
 
     // -------------------------------------------------------------------------
-    // Buffer between pool1 and conv1d_tm: T_POOL1 × F2 entries.
-    // The buffer is filled during INGEST (one (F2)-wide vector every POOL1
-    // input cycles) and read out during CONV1D drive (one per handshake).
+    // Buffer between pool1 and conv1d_tm: T_POOL1 rows × (F2*DATA_WIDTH) bits.
+    // Stored as a 1D unpacked array of FLAT bit-vectors so Vivado infers one
+    // wide BRAM (the previous 2D-unpacked form `pre_conv_buf[T][F2]` falls
+    // back to FFs because the per-channel for-loop access pattern needs F2
+    // simultaneous ports).
     // -------------------------------------------------------------------------
-    logic signed [DATA_WIDTH-1:0] pre_conv_buf [0:T_POOL1-1][0:F2-1];
+    localparam int PRE_W = F2 * DATA_WIDTH;
+
+    (* ram_style = "block" *)
+    logic [PRE_W-1:0] pre_conv_buf [0:T_POOL1-1];
+
+    // Pack pool1_y into a flat word for the wide write port.
+    logic [PRE_W-1:0] pool1_y_flat;
+    for (genvar gi = 0; gi < F2; gi++) begin : g_pack_pool1
+        assign pool1_y_flat[gi*DATA_WIDTH +: DATA_WIDTH] = pool1_y[gi];
+    end
+
+    // BRAM output register for the conv1d-drive path + pad-mask register.
+    logic [PRE_W-1:0] pre_conv_buf_rd_flat;
+    logic             pre_pad_reg;
 
     // -------------------------------------------------------------------------
     // Stage 4: conv1d_temporal_tm — F_IN=F2 → F_SEP_OUT, KE=KE_SEP, same pad.
@@ -137,9 +152,32 @@ module branch_pipeline #(
     );
 
     // -------------------------------------------------------------------------
-    // Buffer for the 75 valid sep outputs (skip the first KE-1=15 padded ones).
+    // Buffer for the 75 valid sep outputs (skip the first KE-1=15 padded
+    // ones). Same flat-bit-vector layout as pre_conv_buf so Vivado infers a
+    // single wide BRAM instead of F_SEP_OUT parallel FF chains.
     // -------------------------------------------------------------------------
-    logic signed [DATA_WIDTH-1:0] post_conv_buf [0:T_POOL1-1][0:F_SEP_OUT-1];
+    localparam int POST_W = F_SEP_OUT * DATA_WIDTH;
+
+    (* ram_style = "block" *)
+    logic [POST_W-1:0] post_conv_buf [0:T_POOL1-1];
+
+    // Pack sep_y into a flat word for the wide write port.
+    logic [POST_W-1:0] sep_y_flat;
+    for (genvar gi = 0; gi < F_SEP_OUT; gi++) begin : g_pack_sep_y
+        assign sep_y_flat[gi*DATA_WIDTH +: DATA_WIDTH] = sep_y[gi];
+    end
+
+    // BRAM output register for the elu2-drive path.
+    logic [POST_W-1:0] post_conv_buf_rd_flat;
+
+    // Unpack pre_conv_buf_rd_flat to sep_in combinationally with the pad-zero
+    // mask. The matching unpack for elu2_in lives below, after that array is
+    // declared (SV requires the target signal to exist before a continuous
+    // assignment references it).
+    for (genvar gi = 0; gi < F2; gi++) begin : g_unpack_sep_in
+        assign sep_in[gi] = pre_pad_reg ? '0
+                          : $signed(pre_conv_buf_rd_flat[gi*DATA_WIDTH +: DATA_WIDTH]);
+    end
 
     // -------------------------------------------------------------------------
     // Stage 5/6: ELU + AvgPool(POOL2) — driven during the POST phase
@@ -148,6 +186,11 @@ module branch_pipeline #(
     logic                         elu2_in_valid;
     logic signed [DATA_WIDTH-1:0] elu2_y    [0:F_SEP_OUT-1];
     logic                         elu2_y_valid;
+
+    // Combinational unpack of the post_conv_buf BRAM output register.
+    for (genvar gi = 0; gi < F_SEP_OUT; gi++) begin : g_unpack_elu2_in
+        assign elu2_in[gi] = $signed(post_conv_buf_rd_flat[gi*DATA_WIDTH +: DATA_WIDTH]);
+    end
 
     elu #(
         .DATA_WIDTH(DATA_WIDTH), .NUM_CH(F_SEP_OUT),
@@ -191,10 +234,9 @@ module branch_pipeline #(
     logic [$clog2(T_POOL1+1)-1:0] post_drive_cnt;        // input index into elu2/pool2 during POST
     logic [$clog2(T_POOL2+1)-1:0] pool2_out_cnt;         // # of pool2 outputs received this inference
 
-    function automatic logic signed [DATA_WIDTH-1:0] sep_sample_at_idx(input int t_in, input int fi);
-        if (t_in < PAD_TOP || t_in >= PAD_TOP + T_POOL1) return '0;
-        return pre_conv_buf[t_in - PAD_TOP][fi];
-    endfunction
+    // sep_sample_at_idx() removed: the pad-zero mask now lives on pre_pad_reg
+    // and the per-channel slicing is done by the g_unpack_sep_in continuous
+    // assigns above. This keeps a single addressable read port on the BRAM.
 
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -208,17 +250,17 @@ module branch_pipeline #(
             elu2_in_valid     <= 1'b0;
             y_valid           <= 1'b0;
             done              <= 1'b0;
-            for (int i = 0; i < F2; i++)        sep_in[i]  <= '0;
-            for (int i = 0; i < F_SEP_OUT; i++) elu2_in[i] <= '0;
+            pre_conv_buf_rd_flat  <= '0;
+            post_conv_buf_rd_flat <= '0;
+            pre_pad_reg           <= 1'b1;
             for (int i = 0; i < F_SEP_OUT; i++) y_out[i]   <= '0;
         end else begin
             done    <= 1'b0;
             y_valid <= 1'b0;
 
-            // Pool1 output capture during ingest.
+            // Pool1 output capture during ingest — single wide BRAM write.
             if (pool1_y_valid && state == S_INGEST) begin
-                for (int i = 0; i < F2; i++)
-                    pre_conv_buf[pool1_capture_cnt][i] <= pool1_y[i];
+                pre_conv_buf[pool1_capture_cnt] <= pool1_y_flat;
                 pool1_capture_cnt <= pool1_capture_cnt + 1;
             end
 
@@ -227,8 +269,7 @@ module branch_pipeline #(
             if (sep_y_valid && (state == S_CONV_DRIVE || state == S_CONV_WAIT)) begin
                 if (sep_recv_idx >= (KE_SEP - 1)
                     && sep_recv_idx < (KE_SEP - 1) + T_POOL1) begin
-                    for (int i = 0; i < F_SEP_OUT; i++)
-                        post_conv_buf[sep_recv_idx - (KE_SEP - 1)][i] <= sep_y[i];
+                    post_conv_buf[sep_recv_idx - (KE_SEP - 1)] <= sep_y_flat;
                 end
                 sep_recv_idx <= sep_recv_idx + 1;
             end
@@ -250,9 +291,13 @@ module branch_pipeline #(
                 S_CONV_DRIVE: begin
                     // Standard valid/ready: drive valid+data; the cycle the DUT
                     // also reports ready, the transaction completes (advance idx).
-                    sep_in_valid <= 1'b1;
-                    for (int i = 0; i < F2; i++)
-                        sep_in[i] <= sep_sample_at_idx(sep_drive_idx, i);
+                    // The data path is now a single wide BRAM read into
+                    // pre_conv_buf_rd_flat; sep_in is unpacked combinationally
+                    // with the pad-zero mask via pre_pad_reg.
+                    sep_in_valid           <= 1'b1;
+                    pre_conv_buf_rd_flat   <= pre_conv_buf[sep_drive_idx - PAD_TOP];
+                    pre_pad_reg            <= (sep_drive_idx < PAD_TOP)
+                                            || (sep_drive_idx >= PAD_TOP + T_POOL1);
                     if (sep_in_valid && sep_in_ready) begin
                         // Just accepted; advance to the next input on the next cycle.
                         sep_in_valid <= 1'b0;
@@ -272,9 +317,10 @@ module branch_pipeline #(
                     end
                 end
                 S_POST: begin
-                    elu2_in_valid <= 1'b1;
-                    for (int i = 0; i < F_SEP_OUT; i++)
-                        elu2_in[i] <= post_conv_buf[post_drive_cnt][i];
+                    // Wide BRAM read into post_conv_buf_rd_flat; elu2_in is
+                    // unpacked combinationally via g_unpack_elu2_in.
+                    elu2_in_valid         <= 1'b1;
+                    post_conv_buf_rd_flat <= post_conv_buf[post_drive_cnt];
                     if (post_drive_cnt == N_POOL2_USED - 1) begin
                         state <= S_DRAIN;
                     end

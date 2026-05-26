@@ -28,6 +28,12 @@
 
 `timescale 1ns / 1ps
 
+// Module-level (* use_dsp = "no" *) forces the per-channel reciprocal
+// multiply (final_sum * INV_POOL) into LUTs/CARRY8 instead of DSP48E2.
+// INV_POOL is a compile-time constant — for POOL=8 it's 2^21 (a shift),
+// for POOL=7 it's 2396745 which constant-folds into ~60 LUTs per lane.
+// Saves ~64 DSPs across the two pool2 instances at a cost of ~2-4k LUTs.
+(* use_dsp = "no" *)
 module avg_pool_time #(
     parameter int DATA_WIDTH     = 16,
     parameter int NUM_CH         = 32,
@@ -94,6 +100,8 @@ module avg_pool_time #(
     localparam logic signed [MUL_WIDTH-1:0] SAT_LO =
         -(MUL_WIDTH)'(1 <<< (DATA_WIDTH-1));
 
+    // The module-level (* use_dsp = "no" *) attribute on `module
+    // avg_pool_time` (above) forces these multiplies to LUTs.
     logic signed [MUL_WIDTH-1:0] prod    [0:NUM_CH-1];
     logic signed [MUL_WIDTH-1:0] shifted [0:NUM_CH-1];
 

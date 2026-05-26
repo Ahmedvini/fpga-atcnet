@@ -27,41 +27,40 @@
 create_clock -name clk -period 10.000 [get_ports clk]
 
 # ---------------------------------------------------------------------------
-# Input/output delay defaults so the timing engine doesn't flag every AXIS
-# / AXI-Lite port as unconstrained when run out-of-context.
+# Input/output delay defaults — filter by direction so a single AXI-bundle
+# wildcard doesn't apply set_input_delay to output ports (and vice versa),
+# which Vivado rejects with [Constraints 18-602].
 # ---------------------------------------------------------------------------
-set_input_delay  -clock [get_clocks clk] -max 2.0 [get_ports {s_axi_*}]
-set_input_delay  -clock [get_clocks clk] -min 0.5 [get_ports {s_axi_*}]
-set_output_delay -clock [get_clocks clk] -max 2.0 [get_ports {s_axi_*}]
-set_output_delay -clock [get_clocks clk] -min 0.5 [get_ports {s_axi_*}]
+set_input_delay  -clock [get_clocks clk] -max 2.0 [get_ports -filter {DIRECTION == IN}  s_axi_*]
+set_input_delay  -clock [get_clocks clk] -min 0.5 [get_ports -filter {DIRECTION == IN}  s_axi_*]
+set_output_delay -clock [get_clocks clk] -max 2.0 [get_ports -filter {DIRECTION == OUT} s_axi_*]
+set_output_delay -clock [get_clocks clk] -min 0.5 [get_ports -filter {DIRECTION == OUT} s_axi_*]
 
-set_input_delay  -clock [get_clocks clk] -max 2.0 [get_ports {s_axis_*}]
-set_input_delay  -clock [get_clocks clk] -min 0.5 [get_ports {s_axis_*}]
-set_output_delay -clock [get_clocks clk] -max 2.0 [get_ports {s_axis_*}]
-set_output_delay -clock [get_clocks clk] -min 0.5 [get_ports {s_axis_*}]
+set_input_delay  -clock [get_clocks clk] -max 2.0 [get_ports -filter {DIRECTION == IN}  s_axis_*]
+set_input_delay  -clock [get_clocks clk] -min 0.5 [get_ports -filter {DIRECTION == IN}  s_axis_*]
+set_output_delay -clock [get_clocks clk] -max 2.0 [get_ports -filter {DIRECTION == OUT} s_axis_*]
+set_output_delay -clock [get_clocks clk] -min 0.5 [get_ports -filter {DIRECTION == OUT} s_axis_*]
 
 set_output_delay -clock [get_clocks clk] -max 2.0 [get_ports irq_done]
 set_output_delay -clock [get_clocks clk] -min 0.5 [get_ports irq_done]
 
 # ---------------------------------------------------------------------------
 # Reset is asynchronous — declare to the timing engine.
+# Note: avoid `-to [all_registers]` here; on this design that materialises
+# ~1M endpoints and balloons synthesis runtime/memory. The unconstrained
+# `set_false_path -from` form gives the same async-reset semantics.
 # ---------------------------------------------------------------------------
 set_input_delay  -clock [get_clocks clk] -max 2.0 [get_ports rst]
 set_input_delay  -clock [get_clocks clk] -min 0.5 [get_ports rst]
-set_false_path -from [get_ports rst] -to [all_registers]
+set_false_path   -from  [get_ports rst]
 
 # ---------------------------------------------------------------------------
-# Resource attributes — encourage Vivado to map the large weight RAMs and
-# the ECA₁ replay buffer to BRAM/URAM rather than distributed registers.
-# These are HINTs; the synth tool will pick the actual primitive.
+# RAM_STYLE hints live in the RTL as `(* ram_style = "..." *)` attributes on
+# the array declarations (eca1_pipeline.sv, branch_pipeline.sv, tcfn.sv).
+# Applying them via `[get_cells -hierarchical -filter ...]` post-elab forces
+# Vivado to scan the entire 1M-cell netlist per filter, which is what was
+# wedging synthesis.
 # ---------------------------------------------------------------------------
-# ECA₁ pipeline replay buffer (~96 KB).
-set_property RAM_STYLE block [get_cells -hierarchical -filter {NAME =~ *eca1*buf_mem_reg*}] -quiet
-set_property RAM_STYLE block [get_cells -hierarchical -filter {NAME =~ *pre_conv_buf_reg*}] -quiet
-set_property RAM_STYLE block [get_cells -hierarchical -filter {NAME =~ *post_conv_buf_reg*}] -quiet
-# Large TCFN weight banks (5 windows × 4 conv1d × ~4 KB each) — URAM-friendly.
-set_property RAM_STYLE ultra [get_cells -hierarchical -filter {NAME =~ *u_top/u_window/u_tcfn/W*_reg*}] -quiet
-set_property RAM_STYLE ultra [get_cells -hierarchical -filter {NAME =~ *u_top/u_window/u_tcfn/B*_reg*}] -quiet
 
 # ---------------------------------------------------------------------------
 # False paths for the AXI-Lite weight loader writes — single-write

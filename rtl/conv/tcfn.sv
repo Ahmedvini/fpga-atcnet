@@ -77,10 +77,10 @@ module tcfn #(
     // Weight + bias + LUT memories
     // -------------------------------------------------------------------------
     localparam int W_DEPTH = K * F * F;
-    logic signed [COEF_WIDTH-1:0] W0 [0:N_WIN * W_DEPTH - 1];
-    logic signed [COEF_WIDTH-1:0] W1 [0:N_WIN * W_DEPTH - 1];
-    logic signed [COEF_WIDTH-1:0] W2 [0:N_WIN * W_DEPTH - 1];
-    logic signed [COEF_WIDTH-1:0] W3 [0:N_WIN * W_DEPTH - 1];
+    (* ram_style = "ultra" *) logic signed [COEF_WIDTH-1:0] W0 [0:N_WIN * W_DEPTH - 1];
+    (* ram_style = "ultra" *) logic signed [COEF_WIDTH-1:0] W1 [0:N_WIN * W_DEPTH - 1];
+    (* ram_style = "ultra" *) logic signed [COEF_WIDTH-1:0] W2 [0:N_WIN * W_DEPTH - 1];
+    (* ram_style = "ultra" *) logic signed [COEF_WIDTH-1:0] W3 [0:N_WIN * W_DEPTH - 1];
     logic signed [DATA_WIDTH-1:0] B0 [0:N_WIN * F - 1];
     logic signed [DATA_WIDTH-1:0] B1 [0:N_WIN * F - 1];
     logic signed [DATA_WIDTH-1:0] B2 [0:N_WIN * F - 1];
