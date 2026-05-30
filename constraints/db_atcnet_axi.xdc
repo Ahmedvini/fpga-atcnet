@@ -24,7 +24,17 @@
 # Primary clock — 100 MHz on `clk`. For ZCU104, PL_CLK0 from the PS is the
 # canonical source; the IPI block design forwards it here.
 # ---------------------------------------------------------------------------
-create_clock -name clk -period 10.000 [get_ports clk]
+create_clock -name clk -period 17.000 [get_ports clk]
+# Clock target: 58.82 MHz (17.0 ns period).
+# Why not 100 MHz: at 86% LUT / 99.5% DSP utilization the routing is dense;
+# the worst path measured after place&route was 16.1 ns (15 ns period →
+# WNS = -1.1 ns at 67 MHz; ~64% of the path is wire delay, not logic). At
+# 17 ns we get ~1 ns of margin and the design closes cleanly. EEG inference
+# needs <5 Hz classification rate; this design at 58.82 MHz runs ~2,000
+# inferences/sec — ~400× the application requirement. Pushing higher would
+# need either more invasive RTL pipelining (e.g. inside tcfn / cbam_channel)
+# or aggressive impl directives, neither of which is worth the engineering
+# time given there is no application benefit.
 
 # ---------------------------------------------------------------------------
 # Input/output delay defaults — filter by direction so a single AXI-bundle
