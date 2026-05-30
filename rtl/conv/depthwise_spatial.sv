@@ -39,6 +39,7 @@
 
 `timescale 1ns / 1ps
 
+(* use_dsp = "no" *)
 module depthwise_spatial #(
     parameter int    DATA_WIDTH   = 16,
     parameter int    COEF_WIDTH   = 16,

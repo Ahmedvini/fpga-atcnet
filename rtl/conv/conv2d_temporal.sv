@@ -109,35 +109,48 @@ module conv2d_temporal #(
     end
 
     // -------------------------------------------------------------------------
-    // 16 parallel MACs over 64 taps each — 2-stage pipeline.
+    // 16 parallel MACs over 64 taps each — 3-stage pipeline.
     //
-    // Synth observation: the combinational version produced a 61-deep DSP48E2
-    // cascade per filter (~43 ns logic delay, WNS = -36.7 ns vs 10 ns target).
-    // Split the 64-tap sum into two 32-tap halves with a register between
-    // them. Vivado now packs two ~30-deep DSP cascades in parallel; the
-    // critical path drops to roughly half of the original. Adds 1 cycle of
-    // latency; throughput unchanged. No tap snapshot needed because both
-    // halves of the multiply use the SAME cycle's live tap[].
+    // History: the original combinational version had a 61-deep DSP48E2 cascade
+    // (~43 ns logic, WNS = -36.7 ns at 100 MHz). A 2-stage split (32-tap halves)
+    // dropped that to ~24 ns (WNS = -14 ns) — still over budget because each
+    // half is still a 16-multiplier + 5-level adder tree.
+    //
+    // This version splits the 64-tap sum into MAC_SEGS = 8 eighth-sums of
+    // KE/MAC_SEGS = 8 taps each, computed combinationally in parallel from
+    // live tap[]. Pipeline stages:
+    //   Stage 0: 8 partials per filter (mul + 3-level adder tree ≈ 7.5 ns)
+    //   Stage 1: combine in pairs of four (sum_lo = e0+e1+e2+e3,
+    //            sum_hi = e4+e5+e6+e7) — 4-input add tree ≈ 3 ns
+    //   Stage 2: sum_lo + sum_hi + bias + sat → out_filter
+    // Each stage is well under 10 ns. Latency: 3 cycles (unchanged from the
+    // 4-segment version). No tap snapshot needed — all partials use the same
+    // cycle's live tap[]. Previous 4-segment version still gave 16-tap MAC at
+    // stage 0 (~11 ns), which kept WNS just above 0.
     // -------------------------------------------------------------------------
-    logic signed [ACC_WIDTH-1:0] sum_lo [0:F1-1];   // sum of taps[0..KE/2-1]
-    logic signed [ACC_WIDTH-1:0] sum_hi [0:F1-1];   // sum of taps[KE/2..KE-1]
+    localparam int MAC_SEGS    = 8;
+    localparam int MAC_SEG_LEN = KE / MAC_SEGS;       // 8 taps per segment
+
+    logic signed [ACC_WIDTH-1:0] sum_q     [0:F1-1][0:MAC_SEGS-1];
+    logic signed [ACC_WIDTH-1:0] sum_q_reg [0:F1-1][0:MAC_SEGS-1];
 
     always_comb begin
         for (int f = 0; f < F1; f++) begin
-            sum_lo[f] = '0;
-            sum_hi[f] = '0;
-            for (int k = 0; k < KE/2; k++)
-                sum_lo[f] = sum_lo[f] + $signed(tap[k]) * $signed(W[k][f]);
-            for (int k = KE/2; k < KE; k++)
-                sum_hi[f] = sum_hi[f] + $signed(tap[k]) * $signed(W[k][f]);
+            for (int s = 0; s < MAC_SEGS; s++) begin
+                sum_q[f][s] = '0;
+                for (int k = s*MAC_SEG_LEN; k < (s+1)*MAC_SEG_LEN; k++)
+                    sum_q[f][s] = sum_q[f][s] + $signed(tap[k]) * $signed(W[k][f]);
+            end
         end
     end
 
-    // Pipeline registers between the two MAC halves and the final add/sat.
-    logic signed [ACC_WIDTH-1:0]            sum_lo_reg    [0:F1-1];
-    logic signed [ACC_WIDTH-1:0]            sum_hi_reg    [0:F1-1];
-    logic                                   in_valid_d1;
-    logic [$clog2(NUM_EEG_CH)-1:0]          in_electrode_d1;
+    // Stage 1 → 2 pair-add registers (sum_lo = q0+q1, sum_hi = q2+q3).
+    logic signed [ACC_WIDTH-1:0] sum_lo_reg [0:F1-1];
+    logic signed [ACC_WIDTH-1:0] sum_hi_reg [0:F1-1];
+
+    // Valid + electrode pipeline (3 cycles).
+    logic                          in_valid_d1, in_valid_d2;
+    logic [$clog2(NUM_EEG_CH)-1:0] in_electrode_d1, in_electrode_d2;
 
     // -------------------------------------------------------------------------
     // Rescale (>>> FRAC_BITS) + symmetric saturation to DATA_WIDTH
@@ -152,24 +165,37 @@ module conv2d_temporal #(
             out_valid       <= 1'b0;
             out_electrode   <= '0;
             in_valid_d1     <= 1'b0;
+            in_valid_d2     <= 1'b0;
             in_electrode_d1 <= '0;
+            in_electrode_d2 <= '0;
             for (int f = 0; f < F1; f++) begin
                 sum_lo_reg[f] <= '0;
                 sum_hi_reg[f] <= '0;
                 out_filter[f] <= '0;
+                for (int s = 0; s < MAC_SEGS; s++) sum_q_reg[f][s] <= '0;
             end
         end else begin
-            // Stage 0 → stage 1: latch the two half-sums and the valid/electrode.
+            // Stage 0 → 1: latch the four quarter-sums and the valid/electrode.
             in_valid_d1     <= in_valid;
             in_electrode_d1 <= in_electrode;
+            for (int f = 0; f < F1; f++)
+                for (int s = 0; s < MAC_SEGS; s++)
+                    sum_q_reg[f][s] <= sum_q[f][s];
+
+            // Stage 1 → 2: combine the 8 eighth-sums into two halves.
+            // 4-input add tree per side (~3 ns combinational).
+            in_valid_d2     <= in_valid_d1;
+            in_electrode_d2 <= in_electrode_d1;
             for (int f = 0; f < F1; f++) begin
-                sum_lo_reg[f] <= sum_lo[f];
-                sum_hi_reg[f] <= sum_hi[f];
+                sum_lo_reg[f] <= sum_q_reg[f][0] + sum_q_reg[f][1]
+                               + sum_q_reg[f][2] + sum_q_reg[f][3];
+                sum_hi_reg[f] <= sum_q_reg[f][4] + sum_q_reg[f][5]
+                               + sum_q_reg[f][6] + sum_q_reg[f][7];
             end
 
-            // Stage 1 → output: combine, bias, saturate.
-            out_valid     <= in_valid_d1;
-            out_electrode <= in_electrode_d1;
+            // Stage 2 → output: final sum, bias, saturate.
+            out_valid     <= in_valid_d2;
+            out_electrode <= in_electrode_d2;
             for (int f = 0; f < F1; f++) begin
                 logic signed [ACC_WIDTH-1:0] acc_full;
                 logic signed [ACC_WIDTH-1:0] shifted;

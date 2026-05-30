@@ -106,35 +106,90 @@ module cbam_spatial_attn #(
     logic [$clog2(T_WIN+1)-1:0] t_idx;     // counts incoming vectors
 
     // Combinational per-vector reductions over c.
-    logic signed [31:0]            cur_avg_sum;
-    logic signed [DATA_WIDTH-1:0]  cur_max;
-    logic [NORM_WIDTH-1:0]         cur_norm;
-    logic signed [QSUM_WIDTH-1:0]  cur_qsum;
+    // The qsum reduction (32 multiplies × 40-bit adder tree) was the WNS
+    // critical path: spat_x_in_reg → qsum_arr_reg = 14.3 ns combinational at
+    // 100 MHz target. Split it into QSUM_SEGS segmented partial sums (8
+    // channels each) so each segment is mul + 3-level adder tree (~7 ns
+    // combinational), with a 1-cycle pipeline register between the partials
+    // and the final 4-input add into qsum_arr.
+    localparam int QSUM_SEGS    = 4;
+    localparam int QSUM_SEG_LEN = NUM_CH / QSUM_SEGS;
+
+    // All four per-vector reductions now share the same QSUM_SEGS=4 segmented
+    // partial-sum / partial-max structure so each combinational stage is
+    // bounded by 8 channels (log2(8)=3 levels of adders/muxes ≈ 4 ns). The
+    // partials are registered alongside cur_qsum_part_reg and combined
+    // combinationally in the "late" view used by the pipelined writes.
+    // Previously cur_max / cur_norm / cur_avg_sum were full 32-channel
+    // combinational reductions (~7.5 ns), which became the WNS path once the
+    // cur_qsum chain was already segmented.
+    logic signed [31:0]            cur_avg_part   [0:QSUM_SEGS-1];
+    logic signed [DATA_WIDTH-1:0]  cur_max_part   [0:QSUM_SEGS-1];
+    logic [NORM_WIDTH-1:0]         cur_norm_part  [0:QSUM_SEGS-1];
+    logic signed [QSUM_WIDTH-1:0]  cur_qsum_part  [0:QSUM_SEGS-1];
     localparam logic signed [DATA_WIDTH-1:0] DATA_MIN = {1'b1, {(DATA_WIDTH-1){1'b0}}};
 
     always_comb begin
-        cur_avg_sum = '0;
-        cur_max     = DATA_MIN;
-        cur_norm    = '0;
-        cur_qsum    = '0;
-        for (int c = 0; c < NUM_CH; c++) begin
-            automatic logic signed [DATA_WIDTH-1:0] xc = x_in[c];
-            automatic logic signed [DATA_WIDTH-1:0] ax;
-            cur_avg_sum = cur_avg_sum + $signed({{(32-DATA_WIDTH){xc[DATA_WIDTH-1]}}, xc});
-            if (xc > cur_max) cur_max = xc;
-            ax = (xc < 0) ? -xc : xc;
-            cur_norm = cur_norm + NORM_WIDTH'(ax);
-            cur_qsum = cur_qsum + $signed({{(QSUM_WIDTH-DATA_WIDTH){ax[DATA_WIDTH-1]}}, ax})
-                                * $signed({{(QSUM_WIDTH-DATA_WIDTH){xc[DATA_WIDTH-1]}}, xc});
+        for (int s = 0; s < QSUM_SEGS; s++) begin
+            cur_avg_part[s]  = '0;
+            cur_max_part[s]  = DATA_MIN;
+            cur_norm_part[s] = '0;
+            cur_qsum_part[s] = '0;
         end
+        for (int c = 0; c < NUM_CH; c++) begin
+            automatic logic signed [DATA_WIDTH-1:0] xc  = x_in[c];
+            automatic logic signed [DATA_WIDTH-1:0] ax  = (xc < 0) ? -xc : xc;
+            automatic int                           seg = c / QSUM_SEG_LEN;
+            cur_avg_part[seg]  = cur_avg_part[seg]
+                               + $signed({{(32-DATA_WIDTH){xc[DATA_WIDTH-1]}}, xc});
+            if (xc > cur_max_part[seg]) cur_max_part[seg] = xc;
+            cur_norm_part[seg] = cur_norm_part[seg] + NORM_WIDTH'(ax);
+            cur_qsum_part[seg] = cur_qsum_part[seg]
+                + $signed({{(QSUM_WIDTH-DATA_WIDTH){ax[DATA_WIDTH-1]}}, ax})
+                * $signed({{(QSUM_WIDTH-DATA_WIDTH){xc[DATA_WIDTH-1]}}, xc});
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // Pipeline registers between the per-vector reductions and the *_arr
+    // writes. All four accumulators flow through the same 1-cycle stage so
+    // they land at the same address (t_idx_d1) when x_valid_d1 fires.
+    // -------------------------------------------------------------------------
+    logic                                       x_valid_d1, frame_last_d1;
+    logic [$clog2(T_WIN+1)-1:0]                 t_idx_d1;
+    logic signed [31:0]                         cur_avg_part_reg  [0:QSUM_SEGS-1];
+    logic signed [DATA_WIDTH-1:0]               cur_max_part_reg  [0:QSUM_SEGS-1];
+    logic        [NORM_WIDTH-1:0]               cur_norm_part_reg [0:QSUM_SEGS-1];
+    logic signed [QSUM_WIDTH-1:0]               cur_qsum_part_reg [0:QSUM_SEGS-1];
+
+    // Late, fully-combined per-vector reductions from the pipelined partials.
+    // Each is a 4-input reduction (~2 ns) so the stage that writes *_arr is
+    // bounded by these adds rather than a 32-channel sweep.
+    logic signed [31:0]            cur_avg_sum_late;
+    logic signed [DATA_WIDTH-1:0]  cur_max_late;
+    logic [NORM_WIDTH-1:0]         cur_norm_late;
+    logic signed [QSUM_WIDTH-1:0]  cur_qsum_late;
+    always_comb begin
+        cur_avg_sum_late = '0;
+        cur_max_late     = DATA_MIN;
+        cur_norm_late    = '0;
+        cur_qsum_late    = '0;
+        for (int s = 0; s < QSUM_SEGS; s++) begin
+            cur_avg_sum_late = cur_avg_sum_late + cur_avg_part_reg[s];
+            if (cur_max_part_reg[s] > cur_max_late) cur_max_late = cur_max_part_reg[s];
+            cur_norm_late    = cur_norm_late    + cur_norm_part_reg[s];
+        end
+        for (int s = 0; s < QSUM_SEGS; s++)
+            cur_qsum_late = cur_qsum_late + cur_qsum_part_reg[s];
     end
 
     // -------------------------------------------------------------------------
     // FSM
     // -------------------------------------------------------------------------
-    typedef enum logic [2:0] {
+    typedef enum logic [3:0] {
         S_IDLE,
         S_ACCUM,          // collecting input
+        S_DRAIN_PIPE,     // wait one cycle for the last pipelined *_arr write
         S_DIV_START,
         S_DIV_WAIT,
         S_DESCRIPTORS,    // build avg/stoch/concat (sequential per t for simplicity)
@@ -218,36 +273,67 @@ module cbam_spatial_attn #(
                 for (int ic = 0; ic < IC_CAT; ic++) cat_arr[t][ic] <= '0;
             end
             for (int c = 0; c < NUM_CH; c++) y_out[c] <= '0;
+            x_valid_d1     <= 1'b0;
+            frame_last_d1  <= 1'b0;
+            t_idx_d1       <= 0;
+            for (int s = 0; s < QSUM_SEGS; s++) begin
+                cur_avg_part_reg[s]  <= '0;
+                cur_max_part_reg[s]  <= DATA_MIN;
+                cur_norm_part_reg[s] <= '0;
+                cur_qsum_part_reg[s] <= '0;
+            end
         end else begin
             gate_valid <= 1'b0;
             y_valid    <= 1'b0;
             div_start  <= 1'b0;
 
+            // -----------------------------------------------------------------
+            // Pipeline stage: capture this cycle's segmented partial reductions
+            // and the metadata needed to retire them on the next cycle. All
+            // four reductions (avg, max, norm, qsum) are segmented into
+            // QSUM_SEGS=4 partials of 8 channels each; the late combinational
+            // combine in cur_*_late then folds them into the *_arr writes.
+            // -----------------------------------------------------------------
+            x_valid_d1      <= x_valid && (state == S_IDLE || state == S_ACCUM);
+            frame_last_d1   <= frame_last;
+            t_idx_d1        <= t_idx;
+            for (int s = 0; s < QSUM_SEGS; s++) begin
+                cur_avg_part_reg[s]  <= cur_avg_part[s];
+                cur_max_part_reg[s]  <= cur_max_part[s];
+                cur_norm_part_reg[s] <= cur_norm_part[s];
+                cur_qsum_part_reg[s] <= cur_qsum_part[s];
+            end
+
+            // Pipelined writes — fire one cycle after each accepted x_valid.
+            if (x_valid_d1) begin
+                avg_sum[t_idx_d1]      <= cur_avg_sum_late;
+                max_acc_arr[t_idx_d1]  <= cur_max_late;
+                norm_arr[t_idx_d1]     <= cur_norm_late;
+                qsum_arr[t_idx_d1]     <= cur_qsum_late;
+            end
+
             unique case (state)
                 S_IDLE: begin
                     if (x_valid) begin
-                        t_idx              <= 1;
-                        avg_sum[0]         <= cur_avg_sum;
-                        max_acc_arr[0]     <= cur_max;
-                        norm_arr[0]        <= cur_norm;
-                        qsum_arr[0]        <= cur_qsum;
-                        state              <= (frame_last) ? S_DIV_START : S_ACCUM;
-                        if (frame_last) fsm_t <= 0;
+                        t_idx <= 1;
+                        if (frame_last) state <= S_DRAIN_PIPE;
+                        else            state <= S_ACCUM;
                     end
                 end
                 S_ACCUM: begin
                     if (x_valid) begin
-                        avg_sum[t_idx]      <= cur_avg_sum;
-                        max_acc_arr[t_idx]  <= cur_max;
-                        norm_arr[t_idx]     <= cur_norm;
-                        qsum_arr[t_idx]     <= cur_qsum;
                         if (frame_last) begin
-                            fsm_t <= 0;
-                            state <= S_DIV_START;
+                            state <= S_DRAIN_PIPE;
                         end else begin
                             t_idx <= t_idx + 1;
                         end
                     end
+                end
+                S_DRAIN_PIPE: begin
+                    // One extra cycle so the last pipeline write retires before
+                    // S_DIV_START reads norm_arr[].
+                    fsm_t <= 0;
+                    state <= S_DIV_START;
                 end
                 S_DIV_START: begin
                     // Floor denom to 1 to avoid /0; multiplexer arms divider.
@@ -338,6 +424,11 @@ module cbam_spatial_attn #(
                 y_valid   <= 1'b1;
                 if (apply_idx == T_WIN - 1) begin
                     apply_idx <= '0;
+                    // Reset t_idx so the next window's pipelined write to
+                    // qsum_arr[t_idx_d1] lands at slot 0 (the previous t_idx
+                    // value of T_WIN-1 would otherwise be captured into
+                    // t_idx_d1 on the next x_valid).
+                    t_idx     <= 0;
                     state     <= S_IDLE;
                 end else begin
                     apply_idx <= apply_idx + 1;

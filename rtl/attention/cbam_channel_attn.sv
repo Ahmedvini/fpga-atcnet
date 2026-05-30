@@ -15,8 +15,8 @@
 //
 // Pipeline (single window):
 //   Phase 1: stream T_WIN vectors → accumulate avg_sum / running max.
-//   Phase 2: on `frame_last` pulse: build avg_gap & max_gap; run shared MLP
-//            on both; sigmoid; latch gate.
+//   Phase 2: on `frame_last` pulse: build avg_gap & max_gap; register them;
+//            run shared MLP on both; sigmoid; latch gate.
 //   Phase 3: re-stream the T_WIN vectors → multiply by latched gate.
 //
 // The TB is responsible for streaming the same window twice (phase 1 then
@@ -213,27 +213,41 @@ module cbam_channel_attn #(
     logic signed [DATA_WIDTH-1:0]   d1_avg_h   [0:D_RED-1];
     logic signed [DATA_WIDTH-1:0]   d1_max_h   [0:D_RED-1];
 
-    // Pipeline registers between Dense1 and Dense2 (timing closure).
-    // D1 evaluates combinationally on the frame_last cycle; d1_*_h is latched
-    // here, and D2 reads from d1_*_h_reg on the next cycle. Splits the long
-    // x_in → accumulator → D1 → D2 → sigmoid critical path roughly in half.
-    // gate_valid now pulses 2 cycles after frame_last (was 1 cycle).
+    // Pipeline registers split the channel-attention gate computation:
+    // frame_last -> GAP regs -> Dense1 partial-sum regs -> Dense1 output regs
+    // -> Dense2/sigmoid gate regs. gate_valid pulses 4 cycles after
+    // frame_last.
+    logic signed [DATA_WIDTH-1:0]   avg_gap_reg [0:NUM_CH-1];
+    logic signed [DATA_WIDTH-1:0]   max_gap_reg [0:NUM_CH-1];
+    logic [31:0]                    d1w_base_reg;
+    logic [31:0]                    d1b_base_reg;
+    logic [31:0]                    d2w_base_reg;
+    logic [31:0]                    d2b_base_reg;
+    logic                           gap_ready;
+    logic                           d1_part_ready;
     logic signed [DATA_WIDTH-1:0]   d1_avg_h_reg [0:D_RED-1];
     logic signed [DATA_WIDTH-1:0]   d1_max_h_reg [0:D_RED-1];
     logic                           d1_ready;
+
+    localparam int D1_SEGS    = 4;
+    localparam int D1_SEG_LEN = NUM_CH / D1_SEGS;
+    logic signed [D1_ACC_WIDTH-1:0] d1_acc_avg_part     [0:D_RED-1][0:D1_SEGS-1];
+    logic signed [D1_ACC_WIDTH-1:0] d1_acc_max_part     [0:D_RED-1][0:D1_SEGS-1];
+    logic signed [D1_ACC_WIDTH-1:0] d1_acc_avg_part_reg [0:D_RED-1][0:D1_SEGS-1];
+    logic signed [D1_ACC_WIDTH-1:0] d1_acc_max_part_reg [0:D_RED-1][0:D1_SEGS-1];
 
     always_comb begin
         for (int o = 0; o < D_RED; o++) begin
             d1_acc_avg[o] = '0;
             d1_acc_max[o] = '0;
-            for (int i = 0; i < NUM_CH; i++) begin
-                d1_acc_avg[o] = d1_acc_avg[o] + $signed(avg_gap[i]) * $signed(D1_W[d1w_base + o * NUM_CH + i]);
-                d1_acc_max[o] = d1_acc_max[o] + $signed(max_gap[i]) * $signed(D1_W[d1w_base + o * NUM_CH + i]);
+            for (int s = 0; s < D1_SEGS; s++) begin
+                d1_acc_avg[o] = d1_acc_avg[o] + d1_acc_avg_part_reg[o][s];
+                d1_acc_max[o] = d1_acc_max[o] + d1_acc_max_part_reg[o][s];
             end
             d1_sh_avg[o] = (d1_acc_avg[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base + o][DATA_WIDTH-1]}}, D1_B[d1b_base + o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base_reg + o][DATA_WIDTH-1]}}, D1_B[d1b_base_reg + o]});
             d1_sh_max[o] = (d1_acc_max[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base + o][DATA_WIDTH-1]}}, D1_B[d1b_base + o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D1_B[d1b_base_reg + o][DATA_WIDTH-1]}}, D1_B[d1b_base_reg + o]});
             // Saturate to Q8.8 then ReLU
             if      (d1_sh_avg[o] >  SAT_HI) d1_avg_h[o] = SAT_HI[DATA_WIDTH-1:0];
             else if (d1_sh_avg[o] <  SAT_LO) d1_avg_h[o] = '0;          // negative → ReLU 0
@@ -243,6 +257,23 @@ module cbam_channel_attn #(
             else if (d1_sh_max[o] <  SAT_LO) d1_max_h[o] = '0;
             else if (d1_sh_max[o] <  0)      d1_max_h[o] = '0;
             else                             d1_max_h[o] = d1_sh_max[o][DATA_WIDTH-1:0];
+        end
+    end
+
+    always_comb begin
+        for (int o = 0; o < D_RED; o++) begin
+            for (int s = 0; s < D1_SEGS; s++) begin
+                d1_acc_avg_part[o][s] = '0;
+                d1_acc_max_part[o][s] = '0;
+                for (int i = 0; i < D1_SEG_LEN; i++) begin
+                    int idx;
+                    idx = s * D1_SEG_LEN + i;
+                    d1_acc_avg_part[o][s] = d1_acc_avg_part[o][s]
+                                          + $signed(avg_gap_reg[idx]) * $signed(D1_W[d1w_base_reg + o * NUM_CH + idx]);
+                    d1_acc_max_part[o][s] = d1_acc_max_part[o][s]
+                                          + $signed(max_gap_reg[idx]) * $signed(D1_W[d1w_base_reg + o * NUM_CH + idx]);
+                end
+            end
         end
     end
 
@@ -261,13 +292,13 @@ module cbam_channel_attn #(
             d2_acc_avg[o] = '0;
             d2_acc_max[o] = '0;
             for (int i = 0; i < D_RED; i++) begin
-                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h_reg[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
-                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h_reg[i]) * $signed(D2_W[d2w_base + o * D_RED + i]);
+                d2_acc_avg[o] = d2_acc_avg[o] + $signed(d1_avg_h_reg[i]) * $signed(D2_W[d2w_base_reg + o * D_RED + i]);
+                d2_acc_max[o] = d2_acc_max[o] + $signed(d1_max_h_reg[i]) * $signed(D2_W[d2w_base_reg + o * D_RED + i]);
             end
             d2_sh_avg[o] = (d2_acc_avg[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base + o][DATA_WIDTH-1]}}, D2_B[d2b_base + o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base_reg + o][DATA_WIDTH-1]}}, D2_B[d2b_base_reg + o]});
             d2_sh_max[o] = (d2_acc_max[o] >>> FRAC_BITS)
-                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base + o][DATA_WIDTH-1]}}, D2_B[d2b_base + o]});
+                         + $signed({{(D1_ACC_WIDTH-DATA_WIDTH){D2_B[d2b_base_reg + o][DATA_WIDTH-1]}}, D2_B[d2b_base_reg + o]});
             if      (d2_sh_avg[o] >  SAT_HI) d2_avg_out[o] = SAT_HI[DATA_WIDTH-1:0];
             else if (d2_sh_avg[o] <  SAT_LO) d2_avg_out[o] = SAT_LO[DATA_WIDTH-1:0];
             else                             d2_avg_out[o] = d2_sh_avg[o][DATA_WIDTH-1:0];
@@ -309,14 +340,28 @@ module cbam_channel_attn #(
 
     logic signed [DATA_WIDTH-1:0] gate_reg [0:NUM_CH-1];
 
-    // Pipeline stage 1 → stage 2: latch d1_*_h on the frame_last cycle into
-    // d1_*_h_reg. D2 then reads from d1_*_h_reg combinationally on the next
-    // cycle; gate_reg latches at the end of that cycle. gate_valid pulses
-    // 2 cycles after frame_last.
+    // Pipeline: latch GAP values on frame_last, latch Dense1 outputs one cycle
+    // later, then latch the final gate after Dense2/sigmoid.
     always_ff @(posedge clk) begin
         if (rst) begin
+            gap_ready <= 1'b0;
+            d1_part_ready <= 1'b0;
             d1_ready  <= 1'b0;
             gate_valid <= 1'b0;
+            for (int c = 0; c < NUM_CH; c++) begin
+                avg_gap_reg[c] <= '0;
+                max_gap_reg[c] <= '0;
+            end
+            d1w_base_reg <= '0;
+            d1b_base_reg <= '0;
+            d2w_base_reg <= '0;
+            d2b_base_reg <= '0;
+            for (int o = 0; o < D_RED; o++) begin
+                for (int s = 0; s < D1_SEGS; s++) begin
+                    d1_acc_avg_part_reg[o][s] <= '0;
+                    d1_acc_max_part_reg[o][s] <= '0;
+                end
+            end
             for (int o = 0; o < D_RED; o++) begin
                 d1_avg_h_reg[o] <= '0;
                 d1_max_h_reg[o] <= '0;
@@ -326,10 +371,32 @@ module cbam_channel_attn #(
                 gate_out[c] <= '0;
             end
         end else begin
-            d1_ready  <= (x_valid && frame_last);
+            gap_ready <= (x_valid && frame_last);
+            d1_part_ready <= gap_ready;
+            d1_ready  <= d1_part_ready;
             gate_valid <= d1_ready;
 
             if (x_valid && frame_last) begin
+                for (int c = 0; c < NUM_CH; c++) begin
+                    avg_gap_reg[c] <= avg_gap[c];
+                    max_gap_reg[c] <= max_gap[c];
+                end
+                d1w_base_reg <= d1w_base;
+                d1b_base_reg <= d1b_base;
+                d2w_base_reg <= d2w_base;
+                d2b_base_reg <= d2b_base;
+            end
+
+            if (gap_ready) begin
+                for (int o = 0; o < D_RED; o++) begin
+                    for (int s = 0; s < D1_SEGS; s++) begin
+                        d1_acc_avg_part_reg[o][s] <= d1_acc_avg_part[o][s];
+                        d1_acc_max_part_reg[o][s] <= d1_acc_max_part[o][s];
+                    end
+                end
+            end
+
+            if (d1_part_ready) begin
                 for (int o = 0; o < D_RED; o++) begin
                     d1_avg_h_reg[o] <= d1_avg_h[o];
                     d1_max_h_reg[o] <= d1_max_h[o];
