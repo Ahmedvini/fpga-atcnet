@@ -1,5 +1,9 @@
 // =============================================================================
-// db_atcnet_esp32.ino  —  ESP32 motor controller for the DB-ATCNet BCI.
+// db_atcnet_esp32.ino  —  ESP32-S3 motor controller for the DB-ATCNet BCI.
+//
+// Target board: ESP32-S3-DevKitC-1 (or any ESP32-S3 module). Arduino IDE
+// board target = "ESP32S3 Dev Module". Pin choices below are S3-safe
+// (no strapping pins, no USB-JTAG pins, no internal SPI/PSRAM pins).
 //
 // Receives one-byte classification results from the Zynq UltraScale+ PS over
 // UART2 and drives two servos through a PCA9685:
@@ -15,12 +19,16 @@
 //   * Test mode: type "T0\n" / "T1\n" on USB Serial to simulate classifications
 //   * Heartbeat LED (slow blink = ok, fast = fault, off = boot)
 //
-// Wiring:
-//   ESP32 GPIO21 (SDA) <-> PCA9685 SDA
-//   ESP32 GPIO22 (SCL) <-> PCA9685 SCL
-//   ESP32 GPIO17 (UART2 TX) <-> Zynq PS UART RX
-//   ESP32 GPIO16 (UART2 RX) <-> Zynq PS UART TX
+// Wiring (ESP32-S3 dev kit):
+//   ESP32-S3 GPIO8  (SDA)      <-> PCA9685 SDA, ADS1115 SDA  (I2C bus)
+//   ESP32-S3 GPIO9  (SCL)      <-> PCA9685 SCL, ADS1115 SCL  (I2C bus)
+//   ESP32-S3 GPIO17 (UART2 TX) <-> Zynq PS UART1 RX (PL pin A20 / CP2108 ch.2)
+//   ESP32-S3 GPIO18 (UART2 RX) <-> Zynq PS UART1 TX (PL pin C19 / CP2108 ch.2)
+//   ESP32-S3 GPIO48 (LED)      built-in WS2812 / heartbeat on most S3 dev kits
 //   PCA9685 V+ <- 6 V (servo buck), CH0 -> hand, CH1 -> leg
+//
+// NOTE for porting back to classic ESP32 (NOT recommended; thesis targets S3):
+//   I2C SDA/SCL = 21/22, UART2 RX/TX = 16/17, LED = 2.
 // =============================================================================
 
 #include <Wire.h>
@@ -43,16 +51,26 @@ constexpr uint32_t SERVO_FREQ_HZ    = 50;     // standard analog servo
 //     path if Architecture A (real-time bio-amp) is ever enabled.
 //   - More tolerant of cheap jumper wires than 921600.
 constexpr long     UART2_BAUD       = 460800;
-constexpr int      UART2_RX_PIN     = 16;
-constexpr int      UART2_TX_PIN     = 17;
+constexpr int      UART2_RX_PIN     = 18;     // ESP32-S3 safe GPIO (was 16 on classic)
+constexpr int      UART2_TX_PIN     = 17;     // ESP32-S3 safe GPIO (was 17 on classic)
+
+// I2C bus shared by PCA9685 (servo PWM) and ADS1115 (analog front-end).
+// Pin choices avoid every S3 strapping / USB / internal-SPI pin, so they
+// work on the stock ESP32-S3-DevKitC-1 without re-soldering. 4.7 kΩ pull-ups
+// to 3V3 on each line, populated on the PCA9685 / ADS1115 break-out boards.
+constexpr int      I2C_SDA_PIN      = 8;      // ESP32-S3 safe GPIO (was 21 on classic)
+constexpr int      I2C_SCL_PIN      = 9;      // ESP32-S3 safe GPIO (was 22 on classic)
+constexpr uint32_t I2C_CLOCK_HZ     = 400000; // Fast-mode I2C
 
 // Periodic re-assertion of the current committed target while in RUNNING.
 // Cheap defense against PCA9685 channel state being out of sync after a
 // transient I2C glitch. Set to 0 to disable.
 constexpr uint32_t REASSERT_MS      = 500;
 
-// Heartbeat / status LED
-constexpr int      LED_PIN          = 2;      // built-in on most ESP32 dev boards
+// Heartbeat / status LED. GPIO 48 is the on-board WS2812 RGB on most
+// ESP32-S3-DevKitC-1 boards; if your S3 board has a plain LED on a
+// different pin, change here. Setting LED_PIN = -1 disables the heartbeat.
+constexpr int      LED_PIN          = 48;     // was 2 on classic ESP32 dev kits
 
 // Mechanical angle limits per servo (degrees). Hand-tune so the servo never
 // physically binds against the prosthetic structure.
@@ -250,7 +268,8 @@ void setup() {
     Serial.println(F(" baud — listening for FPGA class bytes"));
 
     // I2C / PCA9685
-    Wire.begin(21, 22);
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(I2C_CLOCK_HZ);
     pwm.begin();
     pwm.setPWMFreq(SERVO_FREQ_HZ);
     handServo.begin(pwm);
