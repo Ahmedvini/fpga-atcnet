@@ -45,51 +45,70 @@ def main():
         print(f"[test] WARN: expected 6000 bytes, got {len(data)} — sending anyway",
               file=sys.stderr)
 
-    # Open the serial port. DTR/RTS must be deasserted on the ZCU106's CP2108
-    # channel 2 — otherwise the host→FPGA RX line stays gated and bytes never
-    # reach PS UART1 RX FIFO. (Discovered during Phase B6 bring-up.)
+    # Configure the port with stty, then open via raw POSIX. We avoid pyserial
+    # because Serial.open() momentarily asserts DTR/RTS before they can be set
+    # to False — on the ZCU106's CP2108 channel 2 this glitches the link and
+    # the FPGA UART1 stops receiving bytes. With raw POSIX + stty -hupcl, the
+    # control lines stay quiescent. (Discovered during Phase B6 bring-up.)
+    stty_args = [
+        "stty", "-F", args.port,
+        str(args.baud), "cs8", "-cstopb", "-parenb",
+        "-ixon", "-ixoff", "-ixany", "-crtscts",
+        "raw", "-clocal", "-hupcl", "-echo",
+    ]
     try:
-        ser = Serial()
-        ser.port = args.port
-        ser.baudrate = args.baud
-        ser.bytesize = 8
-        ser.parity = 'N'
-        ser.stopbits = 1
-        ser.timeout = 2.0
-        ser.rtscts = False
-        ser.dsrdtr = False
-        ser.open()
-        ser.dtr = False
-        ser.rts = False
+        subprocess.run(stty_args, check=True, capture_output=True)
+    except Exception as e:
+        print(f"[test] ERROR configuring {args.port}: {e}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        fd = os.open(args.port, os.O_RDWR | os.O_NOCTTY)
     except Exception as e:
         print(f"[test] ERROR opening {args.port}: {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"[test] Opened {args.port} @ {args.baud} 8N1 (DTR=False RTS=False)")
+    print(f"[test] Opened {args.port} @ {args.baud} 8N1 (POSIX, no DTR/RTS toggle)")
 
     # Drain any pending bytes
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
+    while True:
+        r, _, _ = select.select([fd], [], [], 0)
+        if not r:
+            break
+        os.read(fd, 4096)
     time.sleep(0.2)
+
+    def read_with_timeout(timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
+            if r:
+                chunk = os.read(fd, 1)
+                if chunk:
+                    return chunk
+        return b""
 
     for i in range(args.n):
         t0 = time.monotonic()
-        ser.write(data)
-        ser.flush()
+        # write all bytes (may need multiple calls if kernel buffer is small)
+        view = memoryview(data)
+        while view:
+            n = os.write(fd, view)
+            view = view[n:]
         write_dt = time.monotonic() - t0
         print(f"[test] #{i+1}: sent 6000 bytes in {write_dt*1000:.1f} ms,"
               f" waiting for class byte (2s timeout)...")
-        reply = ser.read(1)
+        reply = read_with_timeout(2.0)
         dt = time.monotonic() - t0
         if len(reply) != 1:
             print(f"[test] #{i+1}: TIMEOUT — no class byte received after"
                   f" {dt*1000:.0f} ms")
+            os.close(fd)
             sys.exit(2)
         cls = reply[0]
         print(f"[test] #{i+1}: got class={cls} (0x{cls:02x}) in {dt*1000:.1f} ms"
               f" total round-trip")
 
     print("[test] all inferences completed cleanly")
-    ser.close()
+    os.close(fd)
 
 
 if __name__ == "__main__":
