@@ -92,6 +92,20 @@ static int init_uart_to_esp(void)
     status = XUartPs_SetBaudRate(&esp_uart, ESP_UART_BAUD);
     if (status != XST_SUCCESS) return status;
 
+    // The Xilinx driver's divisor search is suboptimal on ZCU106 — it picks
+    // (BAUDGEN=36, BDIV=5) for 460800 instead of the exact (30, 6), and the
+    // resulting ~2% baud error causes framing errors on the CP2108 link.
+    // Force exact divisors here for known-good baud rates.
+    if (ESP_UART_BAUD == 460800) {
+        // 100 MHz / (31 * 7) = 460829 baud  (0.006% error)
+        Xil_Out32(ESP_UART_BASEADDR + 0x18, 30);  // BAUDGEN
+        Xil_Out32(ESP_UART_BASEADDR + 0x34, 6);   // BDIV
+    } else if (ESP_UART_BAUD == 115200) {
+        // 100 MHz / (31 * 28) = 115207 baud  (0.006% error)
+        Xil_Out32(ESP_UART_BASEADDR + 0x18, 30);  // BAUDGEN
+        Xil_Out32(ESP_UART_BASEADDR + 0x34, 27);  // BDIV
+    }
+
     XUartPs_SetOperMode(&esp_uart, XUARTPS_OPER_MODE_NORMAL);
     return XST_SUCCESS;
 }
