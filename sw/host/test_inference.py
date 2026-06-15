@@ -88,15 +88,17 @@ def main():
 
     for i in range(args.n):
         t0 = time.monotonic()
-        # write all bytes (may need multiple calls if kernel buffer is small)
-        view = memoryview(data)
-        while view:
-            n = os.write(fd, view)
-            view = view[n:]
+        # Write via shell redirection — same path as the manual `cat file > tty`
+        # that we know works on this CP2108 channel.
+        proc = subprocess.Popen(["cat"], stdin=subprocess.PIPE,
+                                stdout=open(args.port, "wb", buffering=0))
+        proc.communicate(input=data)
         write_dt = time.monotonic() - t0
         print(f"[test] #{i+1}: sent 6000 bytes in {write_dt*1000:.1f} ms,"
-              f" waiting for class byte (2s timeout)...")
-        reply = read_with_timeout(2.0)
+              f" waiting for class byte (5s timeout)...")
+        # Longer timeout because we observed bytes can take ~2s to fully
+        # propagate via the CP2108 → FPGA path on the first burst.
+        reply = read_with_timeout(5.0)
         dt = time.monotonic() - t0
         if len(reply) != 1:
             print(f"[test] #{i+1}: TIMEOUT — no class byte received after"
