@@ -43,13 +43,26 @@ def main():
         print(f"[test] WARN: expected 6000 bytes, got {len(data)} — sending anyway",
               file=sys.stderr)
 
-    # Open the serial port
+    # Open the serial port. DTR/RTS must be deasserted on the ZCU106's CP2108
+    # channel 2 — otherwise the host→FPGA RX line stays gated and bytes never
+    # reach PS UART1 RX FIFO. (Discovered during Phase B6 bring-up.)
     try:
-        ser = Serial(args.port, args.baud, timeout=2.0)
+        ser = Serial()
+        ser.port = args.port
+        ser.baudrate = args.baud
+        ser.bytesize = 8
+        ser.parity = 'N'
+        ser.stopbits = 1
+        ser.timeout = 2.0
+        ser.rtscts = False
+        ser.dsrdtr = False
+        ser.open()
+        ser.dtr = False
+        ser.rts = False
     except Exception as e:
         print(f"[test] ERROR opening {args.port}: {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"[test] Opened {args.port} @ {args.baud} 8N1")
+    print(f"[test] Opened {args.port} @ {args.baud} 8N1 (DTR=False RTS=False)")
 
     # Drain any pending bytes
     ser.reset_input_buffer()
