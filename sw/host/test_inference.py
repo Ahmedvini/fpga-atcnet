@@ -14,9 +14,11 @@ Default port is /dev/ttyUSB3 (CP2108 channel 2 = PS UART1 EMIO route on the
 ZCU106 with the current udev mapping). Adjust if your enumeration differs.
 """
 import argparse
+import os
+import select
+import subprocess
 import sys
 import time
-from serial import Serial
 
 
 def main():
