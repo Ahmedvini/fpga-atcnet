@@ -72,20 +72,22 @@ constexpr uint32_t REASSERT_MS      = 500;
 // different pin, change here. Setting LED_PIN = -1 disables the heartbeat.
 constexpr int      LED_PIN          = 48;     // was 2 on classic ESP32 dev kits
 
-// Mechanical angle limits per servo (degrees). Hand-tune so the servo never
-// physically binds against the prosthetic structure.
-constexpr int      HAND_MIN_DEG     = 0;      // 0   = fingers open (rest)
-constexpr int      HAND_MAX_DEG     = 90;     // 90  = fingers closed (grip)
-constexpr int      LEG_MIN_DEG      = 70;     // 70  = ankle plantarflex (rest)
-constexpr int      LEG_MAX_DEG      = 110;    // 110 = ankle dorsiflex (lift)
+// Mechanical angle limits per servo (degrees). Both prosthetic actuators move
+// +45° from their rest position when the corresponding class is decided —
+// keep the *_MAX_DEG at REST + 45 so the rate-limited servo lands cleanly on
+// that target without overshoot.
+constexpr int      HAND_REST_DEG    = 0;       // fingers open (rest)
+constexpr int      HAND_MIN_DEG     = 0;
+constexpr int      HAND_MAX_DEG     = HAND_REST_DEG + 45;  // fingers closed (+45° grip)
+
+constexpr int      LEG_REST_DEG     = 70;      // ankle plantarflex (rest)
+constexpr int      LEG_MIN_DEG      = 70;
+constexpr int      LEG_MAX_DEG      = LEG_REST_DEG  + 45;  // ankle dorsiflex (+45° lift)
 
 // Rate limiter: how fast a servo can slew. Lower = safer, smoother, slower.
-constexpr float    HAND_RATE_DPS    = 90.0f;  // degrees / second
+// At 90°/s the hand takes ~0.5 s to reach +45°; at 60°/s the leg takes ~0.75 s.
+constexpr float    HAND_RATE_DPS    = 90.0f;
 constexpr float    LEG_RATE_DPS     = 60.0f;
-
-// Neutral / rest positions on boot and on fault
-constexpr int      HAND_REST_DEG    = 0;
-constexpr int      LEG_REST_DEG     = 70;
 
 // Classifier debouncing: hold a sliding window of the last N classifications,
 // only commit a new target when ≥ MAJORITY_THRESHOLD match.
@@ -295,16 +297,28 @@ void loop() {
         handleByte(b);
     }
 
-    // ---- USB Serial test commands (fixed-size buffer, no String alloc) ----
-    // Recognised: T0, T1, STOP, RESET, STATUS  (case-insensitive, \n or \r).
-    // Overlong lines latch cmd_overflow so the entire line is dropped at the
-    // next newline with a clear log — no silent truncation that could match a
-    // valid-looking prefix and accidentally fire a motor command.
+    // ---- USB Serial: binary class bytes (from host bridge) + text commands ----
+    // The host bridge in raw pass-through mode delivers FPGA class bytes
+    // verbatim (0x00 or 0x01) over the same USB CDC channel that carries the
+    // text command parser. 0x00 / 0x01 are not valid bytes in any text
+    // command, so we route them straight to handleByte() and keep the
+    // existing T0 / T1 / STOP / RESET / STATUS parser intact for everything
+    // else. Overlong text lines latch cmd_overflow so we drop the whole line
+    // at the next newline rather than silently truncating into a prefix that
+    // could accidentally fire a motor command.
     static char    cmd_buf[16];
     static uint8_t cmd_len = 0;
     static bool    cmd_overflow = false;
     while (Serial.available() > 0) {
-        char c = (char)Serial.read();
+        int rb = Serial.read();
+        if (rb < 0) break;
+        uint8_t ub = (uint8_t)rb;
+        if (ub == 0x00 || ub == 0x01) {
+            handleByte(ub);
+            last_fpga_byte_ms = now_ms;
+            continue;
+        }
+        char c = (char)ub;
         if (c == '\n' || c == '\r') {
             if (cmd_overflow) {
                 Serial.println(F("[cmd] line too long — ignored"));
