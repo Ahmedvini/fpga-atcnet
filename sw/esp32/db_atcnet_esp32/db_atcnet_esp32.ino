@@ -457,6 +457,13 @@ void handleByte(uint8_t b) {
     // touch the voter at all while the system is supposed to be inert.
     if (state == State::FAULT || state == State::FAULTING) return;
 
+    // Also drop while HOMING — accepting class bytes here would let
+    // applyDecision() retarget the servos before they finish slewing to
+    // rest, and HOMING's atTarget() check would then "succeed" against
+    // the new target instead of the REST position. That confused the
+    // demo trace (state slips into IDLE while last_committed is stale).
+    if (state == State::HOMING) return;
+
     // Accept only valid class codes; treat anything else as noise.
     if (b != 0 && b != 1) {
         Serial.print(F("[rx] ignored byte 0x")); Serial.println(b, HEX);
