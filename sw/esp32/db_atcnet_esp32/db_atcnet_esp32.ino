@@ -76,9 +76,10 @@ constexpr int      LED_PIN          = 48;     // was 2 on classic ESP32 dev kits
 // +45° from their rest position when the corresponding class is decided —
 // keep the *_MAX_DEG at REST + 45 so the rate-limited servo lands cleanly on
 // that target without overshoot.
-constexpr int      HAND_REST_DEG    = 0;       // fingers open (rest)
-constexpr int      HAND_MIN_DEG     = 0;
-constexpr int      HAND_MAX_DEG     = HAND_REST_DEG + 45;  // fingers closed (+45° grip)
+constexpr int      HAND_REST_DEG    = 180;     // rest at max positive
+constexpr int      HAND_MIN_DEG     = 0;       // full -180° stroke available
+constexpr int      HAND_MAX_DEG     = 180;     // upper bound = rest
+constexpr int      HAND_ACT_DEG     = 0;       // active at min — full -180° from rest
 
 constexpr int      LEG_REST_DEG     = 70;      // ankle plantarflex (rest)
 constexpr int      LEG_MIN_DEG      = 70;
@@ -483,7 +484,7 @@ void applyDecision(uint8_t cls) {
     if (state == State::FAULT) return;
     if (cls == 0) {
         // HAND task -> close fingers, ankle stays at rest.
-        handServo.setTarget(HAND_MAX_DEG);
+        handServo.setTarget(HAND_ACT_DEG);
         legServo.setTarget(LEG_REST_DEG);
     } else {
         // FOOT task -> ankle dorsiflex, hand stays at rest.
